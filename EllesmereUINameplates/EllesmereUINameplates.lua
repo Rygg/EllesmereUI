@@ -1934,30 +1934,30 @@ local function GetDebuffTextColor()
 end
 ns.GetDebuffTextColor = GetDebuffTextColor
 
--- Pandemic glow style definitions.
--- 1 = Pixel Glow (procedural ants), 2 = Action Button Glow (animated ants texture),
--- 3 = Auto-Cast Shine (orbiting sparkles), 4 = GCD (FlipBook atlas),
--- 5 = Modern WoW Glow (FlipBook atlas), 6 = Classic WoW Glow (FlipBook texture)
-local PANDEMIC_GLOW_STYLES = {
-    { name = "Pixel Glow",           procedural = true },
-    { name = "Action Button Glow",   buttonGlow = true, scale = 1.36, previewScale = 1.28 },
-    { name = "Auto-Cast Shine",      autocast = true },
-    { name = "GCD",                  atlas = "RotationHelper_Ants_Flipbook",  scale = 1.47, previewScale = 1.47 },
-    { name = "Modern WoW Glow",      atlas = "UI-HUD-ActionBar-Proc-Loop-Flipbook",  scale = 1.34, previewScale = 1.34 },
-    { name = "Classic WoW Glow",     texture = "Interface\\SpellActivationOverlay\\IconAlertAnts",
-      rows = 5, columns = 5, frames = 25, duration = 0.3, frameW = 48, frameH = 48, scale = 1.47, previewScale = 1.47 },
-}
+-- Nameplate glow styles (Pandemic, Dispel, Important Cast) in their saved
+-- order: a view over the shared styles without Shape Glow (1 Pixel, 2 Action
+-- Button, 3 Auto-Cast, 4 GCD, 5 Modern, 6 Classic). scale/previewScale are
+-- nameplate preview-only fields layered over the shared entries.
+ns.NP_GLOW_VIEW = EllesmereUI.Glows.MakeView({ 1, 2, 3, 5, 6, 7 }, {
+    [2] = { scale = 1.36, previewScale = 1.28 },
+    [4] = { scale = 1.47, previewScale = 1.47 },
+    [5] = { scale = 1.34, previewScale = 1.34 },
+    [6] = { scale = 1.47, previewScale = 1.47 },
+})
+local PANDEMIC_GLOW_STYLES = ns.NP_GLOW_VIEW.list
 ns.PANDEMIC_GLOW_STYLES = PANDEMIC_GLOW_STYLES
 -- Exposed cross-addon (e.g. CDM "Apply Pandemic Glow to all" sync) so styles translate by NAME,
 -- never raw index: this list omits "Custom Shape Glow", so the same index differs per side.
 if EllesmereUI then EllesmereUI.NameplatePandemicGlowStyles = PANDEMIC_GLOW_STYLES end
 
--- PANDEMIC_GLOW_STYLES index -> shared EllesmereUI.Glows.STYLES index. The NP
--- list omits Shape Glow (shared index 4), so every flipbook entry sits one lower
--- here. Lives beside the list it translates FROM on purpose: a second copy is how
--- the two drift the first time a style is inserted into either one. On ns, not
--- a file local: this chunk sits at the Lua 5.1 200-local cap.
-ns.NP_TO_SHARED_GLOW = { 1, 2, 3, 5, 6, 7 }
+-- The engine aura containers have no duration-driven texture alpha, so no
+-- pandemic glow renders on nameplate auras (EUI_Nameplates_AuraContainers.lua,
+-- V1 deferred). Gates the options rows and the CDM pandemic sync.
+ns.NP_PandemicGlowRendered = false
+EllesmereUI.NameplatePandemicGlowRendered = ns.NP_PandemicGlowRendered
+
+-- PANDEMIC_GLOW_STYLES index -> shared EllesmereUI.Glows.STYLES index.
+ns.NP_TO_SHARED_GLOW = ns.NP_GLOW_VIEW.toShared
 
 local function GetPandemicGlowStyle()
     local raw = p and p.pandemicGlowStyle
@@ -2002,7 +2002,12 @@ do
     ns.GetDispelGlowStyle = function()
         local raw = p and p.dispelGlowStyle
         if raw == nil then return defaults.dispelGlowStyle end
-        if type(raw) == "number" then return raw end
+        -- Out-of-range picks read (and render) as Action Button Glow; Blizzard
+        -- Border sits outside the view.
+        if type(raw) == "number" and (raw == EllesmereUI.Glows.STEALABLE_BORDER
+           or (raw >= 1 and raw <= #ns.NP_GLOW_VIEW.list)) then
+            return raw
+        end
         return 2
     end
     -- Per-type colors. The buff row is split into a Magic group and a
@@ -2024,13 +2029,32 @@ do
             local c = TYPE_COLOR[dispelType]
             if c then return c.r, c.g, c.b end
         end
-        -- Never customized = no tint request (nil): the glow engines render
-        -- their default look -- gold ABG halo over white ants -- matching how
-        -- the suite's other glow features treat an unset color. An explicit
-        -- swatch pick (even white) is stored and honored.
+        -- Never customized = "default": no tint request (nil), the suite's
+        -- default look (gold). An explicit swatch pick is stored and honored.
         local c = p and p.dispelGlowColor
-        if not c then return nil, nil, nil end
-        return c.r, c.g, c.b
+        local mode = (p and p.dispelGlowColorMode) or (c and "custom" or "default")
+        return EllesmereUI.Glows.ResolveColor(mode, c and c.r, c and c.g, c and c.b)
+    end
+    -- Full render spec for the dispel glow (live purge glow and its preview).
+    ns.GetDispelGlowSpec = function(dispelType, out)
+        out = out or {}
+        local idx = ns.GetDispelGlowStyle()
+        -- Blizzard Border sits outside the view and keeps Blizzard's own art
+        -- until a colour is picked (ns.GetDispelBorderColor).
+        if idx == EllesmereUI.Glows.STEALABLE_BORDER then
+            out.style = idx
+            out.r, out.g, out.b = ns.GetDispelBorderColor(dispelType)
+        else
+            out.style = ns.NP_TO_SHARED_GLOW[idx] or 2
+            out.r, out.g, out.b = ns.GetDispelGlowColor(dispelType)
+        end
+        out.lines = p and p.dispelGlowLines
+        out.thickness = p and p.dispelGlowThickness
+        out.speed = p and p.dispelGlowSpeed
+        local bgc = p and p.dispelGlowBackgroundColor
+        out.bg = (p and p.dispelGlowBackground == true) or nil
+        out.bgR, out.bgG, out.bgB = bgc and bgc.r, bgc and bgc.g, bgc and bgc.b
+        return out
     end
     -- Blizzard Border tint: the glow colour, except the untouched default gold
     -- (the profile merge fills the key, so it is compared, not nil-tested)
@@ -2886,126 +2910,30 @@ ns.StopAllGlows        = StopAllGlows
 local function StopDispelGlow(slot)
     local dg = slot.dispelGlow
     if not dg or not dg.active then return end
-    if dg.animGroup then dg.animGroup:Stop() end
-    if dg.flipTex then dg.flipTex:Hide() end
-    -- One unified stop: pixel/ABG/autocast plus the ABG preview's engine
-    -- substitute (flipbook + halo) on the wrapper, and the Blizzard Border.
     _G_Glows.StopAllGlows(dg.wrapper)
-    if _G_Glows.HideStealableBorder then _G_Glows.HideStealableBorder(dg.wrapper) end
     dg.wrapper:Hide()
     dg.active = false
 end
 
 -- Preview only: the live nameplate glow runs through EllesmereUI.Glows on the
--- engine buttons. dispelType is "magic" / "enrage" / nil.
--- slotH: the icon height (cropped icons); the Blizzard Border fits it.
+-- engine buttons. dispelType is "magic" / "enrage" / nil. Same spec and engine
+-- path as the live purge glow, so the preview is the live look.
+-- slotH: the icon height (cropped icons).
 local function StartDispelGlow(slot, slotSize, dispelType, slotH)
     local dg = slot.dispelGlow
-    local styleIdx = ns.GetDispelGlowStyle()
-    local styles = PANDEMIC_GLOW_STYLES
-    -- Blizzard Border sits outside the style list (the static stealable art).
-    local blizz = _G_Glows.STEALABLE_BORDER
-    if styleIdx ~= blizz and (styleIdx < 1 or styleIdx > #styles) then styleIdx = 2 end
-    local entry = styles[styleIdx]
-    local sz = slotSize or 26
-
     if not dg then
         local wrapper = CreateFrame("Frame", nil, slot)
         wrapper:SetAllPoints()
         wrapper:SetFrameLevel(slot:GetFrameLevel() + 5)
-        local flipTex = wrapper:CreateTexture(nil, "OVERLAY", nil, 7)
-        flipTex:SetPoint("CENTER")
-        local animGroup = flipTex:CreateAnimationGroup()
-        animGroup:SetLooping("REPEAT")
-        local flipAnim = animGroup:CreateAnimation("FlipBook")
         wrapper:Show()
-        dg = { wrapper = wrapper, flipTex = flipTex, animGroup = animGroup, flipAnim = flipAnim, active = false }
+        dg = { wrapper = wrapper, active = false, spec = {} }
         slot.dispelGlow = dg
     end
-
-    -- Only restart glow if style changed or not active
-    if dg.active and dg.styleIdx == styleIdx then
-        dg.wrapper:Show()
-        return
-    end
-    -- Stop previous style if switching
-    if dg.active then
-        StopDispelGlow(slot)
-    end
-
-    local cr, cg, cb
-    if styleIdx == blizz then
-        cr, cg, cb = ns.GetDispelBorderColor(dispelType)
-    else
-        cr, cg, cb = ns.GetDispelGlowColor(dispelType)
-    end
-
-    if styleIdx == blizz then
-        dg.flipTex:Hide()
-        dg.animGroup:Stop()
-        StopProceduralAnts(dg.wrapper)
-        StopButtonGlow(dg.wrapper)
-        StopAutoCastShine(dg.wrapper)
-        _G_Glows.ShowStealableBorder(dg.wrapper, sz, slotH or sz, cr, cg, cb)
-    elseif entry.procedural then
-        dg.flipTex:Hide()
-        dg.animGroup:Stop()
-        StopButtonGlow(dg.wrapper)
-        StopAutoCastShine(dg.wrapper)
-        -- Fixed values (no user sub-options for dispel glow pixel style)
-        local N = 8; local th = 1; local speed = 4
-        local period = speed
-        local lineLen = math.floor((sz + sz) * (2 / N - 0.1))
-        lineLen = min(lineLen, sz)
-        if lineLen < 1 then lineLen = 1 end
-        StartProceduralAnts(dg.wrapper, N, th, period, lineLen, cr or 1, cg or 1, cb or 1, sz)
-    elseif entry.buttonGlow then
-        dg.flipTex:Hide()
-        dg.animGroup:Stop()
-        StopProceduralAnts(dg.wrapper)
-        StopAutoCastShine(dg.wrapper)
-        -- Preview exactly what the live path renders: the engine substitute
-        -- (white ants + colored halo, gold when no color is chosen), not the
-        -- driver ABG -- shared STYLES index 2 = Action Button Glow.
-        _G_Glows.StartEngineGlow(dg.wrapper, 2, sz, cr, cg, cb)
-    elseif entry.autocast then
-        dg.flipTex:Hide()
-        dg.animGroup:Stop()
-        StopProceduralAnts(dg.wrapper)
-        StopButtonGlow(dg.wrapper)
-        StartAutoCastShine(dg.wrapper, sz, cr or 1, cg or 0.788, cb or 0.137)
-    else
-        -- FlipBook-based glow (GCD, Modern, Classic); matches the pandemic pattern
-        StopProceduralAnts(dg.wrapper)
-        StopButtonGlow(dg.wrapper)
-        StopAutoCastShine(dg.wrapper)
-        local flipTex = dg.flipTex
-        local animGroup = dg.animGroup
-        local flipAnim = dg.flipAnim
-
-        local texSz = sz * (entry.scale or 1)
-        flipTex:SetSize(texSz, texSz)
-        if entry.atlas then
-            flipTex:SetAtlas(entry.atlas)
-        elseif entry.texture then
-            flipTex:SetTexture(entry.texture)
-        end
-        flipAnim:SetFlipBookRows(entry.rows or 6)
-        flipAnim:SetFlipBookColumns(entry.columns or 5)
-        flipAnim:SetFlipBookFrames(entry.frames or 30)
-        flipAnim:SetDuration(entry.duration or 1.0)
-        flipAnim:SetFlipBookFrameWidth(entry.frameW or 0)
-        flipAnim:SetFlipBookFrameHeight(entry.frameH or 0)
-
-        flipTex:SetDesaturated(true)
-        flipTex:SetVertexColor(cr or 1, cg or 1, cb or 1)
-        flipTex:Show()
-        animGroup:Play()
-    end
-
+    local sz = slotSize or 26
+    ns.GetDispelGlowSpec(dispelType, dg.spec)
     dg.wrapper:Show()
+    _G_Glows.StartSpecGlow(dg.wrapper, dg.spec, sz, slotH or sz, "engine", _G_Glows.PANEL_EXTRA)
     dg.active = true
-    dg.styleIdx = styleIdx
     -- Always opaque. Visibility used to ride a per-aura dispel-type curve's
     -- alpha; dispellability is now decided by which aura GROUP the button
     -- belongs to, and this path only ever draws the options preview.
@@ -9332,49 +9260,29 @@ function NameplateFrame:UpdateImportantCastGlow(spellID)
     end
 
     local Glows = _G_Glows or EllesmereUI.Glows
-    if not Glows then return end
+    if not (Glows and Glows.StartSpecGlow) then return end
 
     local style = cfg.importantCastGlowStyle or defaults.importantCastGlowStyle or 1
     if type(style) ~= "number" or style < 1 or style > #PANDEMIC_GLOW_STYLES then style = 1 end
     local c = cfg.importantCastGlowColor or defaults.importantCastGlowColor or { r = 1, g = 0.2, b = 0.2 }
     local bgColor = cfg.importantCastGlowBackgroundColor or defaults.importantCastGlowBackgroundColor or { r = 0, g = 0, b = 0 }
-    local bgOn = cfg.importantCastGlowBackground == true
-    -- Lines/thickness/speed and the background are Pixel Glow's own knobs; every
-    -- other style ignores them, so they stay nil and out of the cache key below.
-    local impN, impTh, impPeriod
-    if style == 1 then
-        impN = cfg.importantCastGlowLines or defaults.importantCastGlowLines or 8
-        impTh = cfg.importantCastGlowThickness or defaults.importantCastGlowThickness or 2
-        impPeriod = cfg.importantCastGlowSpeed or defaults.importantCastGlowSpeed or 4
-    end
-
-    -- Ensure glow animation is running (idempotent if already active)
-    if not self._importantGlowActive or self._importantGlowStyle ~= style
-       or self._importantGlowR ~= c.r or self._importantGlowG ~= c.g or self._importantGlowB ~= c.b
-       or self._importantGlowBgOn ~= bgOn or self._importantGlowBgR ~= bgColor.r
-       or self._importantGlowBgG ~= bgColor.g or self._importantGlowBgB ~= bgColor.b
-       or self._importantGlowN ~= impN or self._importantGlowTh ~= impTh
-       or self._importantGlowPeriod ~= impPeriod then
-        Glows.StopAllGlows(self._importantCastOverlay)
-        local pW, pH = self.cast:GetWidth(), self.cast:GetHeight()
-        if pW < 5 then pW = 100 end
-        if pH < 5 then pH = 14 end
-        -- StartGlow owns the per-style engine pick. Its Pixel Glow path reproduces
-        -- the old direct call exactly: same lineLen formula, and an unset bg alpha
-        -- resolves to 1 there, which is what omitting the argument used to do.
-        local Start = StartGlow or Glows.StartGlow
-        Start(self._importantCastOverlay, ns.NP_TO_SHARED_GLOW[style] or 1, pW, c.r, c.g, c.b,
-            style == 1 and {
-                N = impN, th = impTh, period = impPeriod,
-                bg = bgOn and { r = bgColor.r or 0, g = bgColor.g or 0, b = bgColor.b or 0 } or nil,
-            } or nil, pH)
-        self._importantGlowActive = true
-        self._importantGlowStyle = style
-        self._importantGlowR, self._importantGlowG, self._importantGlowB = c.r, c.g, c.b
-        self._importantGlowBgOn = bgOn
-        self._importantGlowBgR, self._importantGlowBgG, self._importantGlowBgB = bgColor.r, bgColor.g, bgColor.b
-        self._importantGlowN, self._importantGlowTh, self._importantGlowPeriod = impN, impTh, impPeriod
-    end
+    -- One scratch spec for every plate: StartSpecGlow reads it synchronously.
+    local spec = ns._impCastGlowSpec
+    if not spec then spec = {}; ns._impCastGlowSpec = spec end
+    spec.style = ns.NP_TO_SHARED_GLOW[style] or 1
+    spec.excludes = Glows.RECT_EXCLUDES
+    spec.r, spec.g, spec.b = Glows.ResolveColor(cfg.importantCastGlowColorMode or "custom", c.r, c.g, c.b)
+    spec.lines = cfg.importantCastGlowLines or defaults.importantCastGlowLines
+    spec.thickness = cfg.importantCastGlowThickness or defaults.importantCastGlowThickness
+    spec.speed = cfg.importantCastGlowSpeed or defaults.importantCastGlowSpeed
+    spec.bg = (cfg.importantCastGlowBackground == true) or nil
+    spec.bgR, spec.bgG, spec.bgB = bgColor.r, bgColor.g, bgColor.b
+    local pW, pH = self.cast:GetWidth(), self.cast:GetHeight()
+    if pW < 5 then pW = 100 end
+    if pH < 5 then pH = 14 end
+    -- Restarts only when the setting or the bar size changed.
+    Glows.StartSpecGlow(self._importantCastOverlay, spec, pW, pH, "bar")
+    self._importantGlowActive = true
 
     -- SetAlphaFromBoolean handles the secret boolean taint-free.
     -- Important = alpha 1 (glow visible), not important = alpha 0 (glow hidden).
@@ -9394,7 +9302,6 @@ function NameplateFrame:ClearImportantCastGlow()
         self._importantCastOverlay:SetAlpha(0)
         self._importantCastOverlay:Hide()
         self._importantGlowActive = false
-        self._importantGlowStyle = nil
     end
 end
 

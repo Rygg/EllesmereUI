@@ -80,6 +80,35 @@ local function DmApply()
     if ns.DMP_RefreshPreview then ns.DMP_RefreshPreview() end
 end
 
+-- Frame Glow tile: the shared glow descriptor over the tile's own keys (always
+-- on, no None). The tile editor and the options preview (GO.Spec) share it.
+local function TileGlowDesc(t, onChange)
+    return {
+        host = "engine", noNone = true, excludes = EllesmereUI.Glows.RECT_EXCLUDES,
+        -- The half next to Filters is too narrow for the color swatches.
+        colorInCog = true,
+        caps = { mode = true, params = true, bg = true },
+        defaultColor = { r = 1, g = 0.78, b = 0.38 },
+        onChange = onChange,
+        get = function(f)
+            if f == "style" then return t.glowType or 1
+            elseif f == "mode" then return t.glowColorMode or "default"
+            -- The tile keeps its color under t.color, the rest under glow*.
+            elseif f == "color" then local c = t.color; if c then return c.r, c.g, c.b end
+            end
+            return EllesmereUI.GlowOptions.FlatGet(t, "glow", f)
+        end,
+        set = function(f, a, b2, c2)
+            if f == "style" then t.glowType = a
+            elseif f == "mode" then t.glowColorMode = a
+            elseif f == "color" then t.color = { r = a, g = b2, b = c2 }
+            elseif f == "bg" then t.glowBackground = a and true or nil
+            else EllesmereUI.GlowOptions.FlatSet(t, "glow", f, a, b2, c2)
+            end
+        end,
+    }
+end
+
 local function DmProfile()
     return ns.db and ns.db.profile
 end
@@ -314,21 +343,7 @@ local function BuildFxEffects(frame, sy, fxOwner)
     end
     local list = fxOwner.fxList or {}
 
-    local GLOW_VALUES = { [0] = "None" }
-    local GLOW_ORDER = { 0 }
-    local Styles = EllesmereUI.Glows and EllesmereUI.Glows.STYLES
-    if Styles then
-        for i, entry in ipairs(Styles) do
-            -- Auto-Cast Shine joins Shape Glow in the exclusions: these
-            -- glows live on the forbidden slot-button subtree, and neither
-            -- style has a C-side equivalent to render there (stale saved
-            -- picks fall back to Modern WoW Glow via StartEngineGlow).
-            if not (entry.shapeGlow or entry.autocast) then
-                GLOW_VALUES[i] = entry.name
-                GLOW_ORDER[#GLOW_ORDER + 1] = i
-            end
-        end
-    end
+    local GO = EllesmereUI.GlowOptions
 
     -- One "ICON EFFECTS" section block per list entry.
     for bi = 1, #list do
@@ -368,79 +383,24 @@ local function BuildFxEffects(frame, sy, fxOwner)
             end)
         end
 
-        -- Row 1: Filters | Icon Glow (+ class/custom swatches)
+        -- Row 1: Filters | Icon Glow (shared glow controls)
+        local glowDesc = GO and GO.PrefixSite(function() return e end, "glow", "engine", DmApply)
+        -- The half next to Filters is too narrow for the color swatches.
+        if glowDesc then glowDesc.colorInCog = true end
         local row
         row, hh = W:DualRow(frame, sy,
             { type = "dropdown", text = "Filters",
               values = { __placeholder = "..." }, order = { "__placeholder" },
               getValue = function() return "__placeholder" end,
               setValue = function() end },
-            { type = "dropdown", text = "Icon Glow",
-              values = GLOW_VALUES, order = GLOW_ORDER,
-              getValue = function() return e.glowType or 0 end,
-              setValue = function(v) e.glowType = v; DmApply(); EllesmereUI:RefreshPage() end }); sy = sy - hh
+            glowDesc and GO.DropdownSpec(glowDesc, "Icon Glow") or { type = "label", text = "" }); sy = sy - hh
         do
             -- The SAME filter dropdown as Assigned Debuffs / tile panes
             -- (shared items incl. the split dispel entries + tooltips).
             if not e.filters then e.filters = {} end
             BuildFilterCBDropdown(row._leftRegion, e.filters, DmTable() or {})
         end
-        do
-            local rgn = row._rightRegion
-            local ctrl = rgn._control
-
-            local classSwatch, updateClassSwatch = EllesmereUI.BuildColorSwatch(
-                rgn, row:GetFrameLevel() + 3,
-                function()
-                    local _, classFile = UnitClass("player")
-                    local cc = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
-                    if cc then return cc.r, cc.g, cc.b end
-                    return 1, 0.82, 0
-                end,
-                function() end,
-                false, 20)
-            PP.Point(classSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
-            classSwatch:SetScript("OnClick", function()
-                e.glowClassColor = true; DmApply(); EllesmereUI:RefreshPage()
-            end)
-            classSwatch:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(classSwatch, "Class Colored")
-            end)
-            classSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            local glowSwatch, updateGlowSwatch = EllesmereUI.BuildColorSwatch(
-                rgn, row:GetFrameLevel() + 3,
-                function() return e.glowR or 1.0, e.glowG or 0.776, e.glowB or 0.376 end,
-                function(r, g, b)
-                    e.glowR, e.glowG, e.glowB = r, g, b
-                    DmApply()
-                end,
-                false, 20)
-            PP.Point(glowSwatch, "RIGHT", classSwatch, "LEFT", -8, 0)
-            glowSwatch:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(glowSwatch, "Custom Colored")
-            end)
-            glowSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            -- Click the dimmed custom swatch to switch back from class color.
-            local origGlowClick = glowSwatch:GetScript("OnClick")
-            glowSwatch:SetScript("OnClick", function(self, ...)
-                if e.glowClassColor then
-                    e.glowClassColor = false; DmApply(); EllesmereUI:RefreshPage()
-                    return
-                end
-                if (e.glowType or 0) == 0 then return end
-                if origGlowClick then origGlowClick(self, ...) end
-            end)
-
-            local function UpdateFxGlowState()
-                local noGlow = (e.glowType or 0) == 0
-                local isClassColored = e.glowClassColor
-                glowSwatch:SetAlpha((isClassColored or noGlow) and 0.3 or 1)
-                classSwatch:SetAlpha((isClassColored and not noGlow) and 1 or 0.3)
-            end
-            EllesmereUI.RegisterWidgetRefresh(function() updateGlowSwatch(); updateClassSwatch(); UpdateFxGlowState() end)
-            UpdateFxGlowState()
-        end
+        if glowDesc then GO.AttachInline(row._rightRegion, glowDesc) end
 
         -- Row 2: Border (+ swatch, the DISPLAY-section Border style) | Size
         -- (icon size for the matched filters; 0 = the grid's own size).
@@ -1201,42 +1161,23 @@ local function BuildTileDetail(frame, fontPath, t)
 
     -- Effect tiles: checked filter categories + type-specific visuals.
     _, hh = W:SectionHeader(frame, "EFFECT", sy); sy = sy - hh
+    -- Frame Glow: shared glow controls over the tile's own keys (always on: no None).
+    local GO = EllesmereUI.GlowOptions
+    local glowDesc
+    if t.type == "glow" and GO then
+        glowDesc = TileGlowDesc(t, DmApply)
+    end
     local catRow
     catRow, hh = W:DualRow(frame, sy,
         { type = "dropdown", text = "Filters",
           values = { __placeholder = "..." }, order = { "__placeholder" },
           getValue = function() return "__placeholder" end,
           setValue = function() end },
-        { type = "label", text = (t.type == "bar") and "" or "Color" }); sy = sy - hh
+        glowDesc and GO.DropdownSpec(glowDesc, "Glow")
+            or { type = "label", text = (t.type == "bar" or t.type == "glow") and "" or "Color" }); sy = sy - hh
     BuildTileFiltersDD(catRow._leftRegion, t, DmTable() or {})
-    if t.type == "glow" then
-        -- Trio swatch (default / custom / class) -- the CDM pandemic-glow
-        -- color pattern.
-        local rgn = catRow._rightRegion
-        local PPl = EllesmereUI.PP or EllesmereUI.PanelPP
-        local customSwatch, defaultSwatch, classSwatch = EllesmereUI.BuildTrioColorSwatch(
-            rgn, catRow:GetFrameLevel() + 3,
-            {
-                getMode = function() return t.glowColorMode or "default" end,
-                setMode = function(m)
-                    t.glowColorMode = m
-                    DmApply()
-                end,
-                getCustomRGB = function()
-                    local c = t.color
-                    return (c and c.r) or 1, (c and c.g) or 0.78, (c and c.b) or 0.38
-                end,
-                setCustomRGB = function(r, g, b)
-                    t.color = { r = r, g = g, b = b }
-                    DmApply()
-                end,
-                hasClassColor = true,
-                onChange = function() EllesmereUI:RefreshPage() end,
-            })
-        PPl.Point(classSwatch, "RIGHT", rgn, "RIGHT", -20, 0)
-        PPl.Point(customSwatch, "RIGHT", classSwatch, "LEFT", -8, 0)
-        PPl.Point(defaultSwatch, "RIGHT", customSwatch, "LEFT", -8, 0)
-        rgn._lastInline = defaultSwatch
+    if glowDesc then
+        GO.AttachInline(catRow._rightRegion, glowDesc)
     elseif t.type ~= "bar" then
         -- Health color rides a dedicated Opacity slider (BM parity), so
         -- its swatch has no alpha strip. (The bar's colors live in its
@@ -1258,22 +1199,7 @@ local function BuildTileDetail(frame, fontPath, t)
         rgn._lastInline = swatch
     end
 
-    if t.type == "glow" then
-        -- Frame Glow renders exactly one style: the animation-driven pixel
-        -- march (the only look the forbidden slot subtree can run).
-        _, hh = W:DualRow(frame, sy,
-            { type = "slider", text = "Speed", min = 1, max = 10, step = 1,
-              getValue = function() return t.glowSpeed or 4 end,
-              setValue = function(v) TSet("glowSpeed", v) end },
-            { type = "slider", text = "Lines", min = 4, max = 16, step = 1,
-              getValue = function() return t.glowLines or 8 end,
-              setValue = function(v) TSet("glowLines", v) end }); sy = sy - hh
-        _, hh = W:DualRow(frame, sy,
-            { type = "slider", text = "Thickness", min = 1, max = 4, step = 1,
-              getValue = function() return t.glowThickness or 2 end,
-              setValue = function(v) TSet("glowThickness", v) end },
-            { type = "label", text = "" }); sy = sy - hh
-    elseif t.type == "bar" then
+    if t.type == "bar" then
         -- BM bar indicator CORE + DISPLAY 1:1 (minus Own Only and the
         -- 12.1-removed Max Duration / Threshold).
         local isVert = (t.orientation or "HORIZONTAL") == "VERTICAL"
@@ -1916,25 +1842,10 @@ function ns.DMP_RefreshPreview()
                         gov:EnableMouse(false)
                         pv._dmGlow = gov
                     end
-                    -- Color mode parity with the live renderer.
-                    local cr, cg2, cb2 = 1.0, 0.788, 0.137
-                    local mode = t.glowColorMode or "default"
-                    if mode == "class" then
-                        local _, cf = UnitClass("player")
-                        local ccc = cf and RAID_CLASS_COLORS and RAID_CLASS_COLORS[cf]
-                        if ccc then cr, cg2, cb2 = ccc.r, ccc.g, ccc.b end
-                    elseif mode == "custom" then
-                        local c = t.color or { r = 1, g = 0.78, b = 0.38 }
-                        cr, cg2, cb2 = c.r or 1, c.g or 0.78, c.b or 0.38
-                    end
+                    -- Live parity: the tile's own descriptor, the same call as the slot renderer.
+                    local spec = EllesmereUI.GlowOptions.Spec(TileGlowDesc(t))
                     gov:Show()
-                    -- Live parity: the animation-driven pixel march (the
-                    -- only style the live slots render).
-                    if Glows.StartAnimatedAnts then
-                        Glows.StartAnimatedAnts(gov, t.glowLines or 8,
-                            t.glowThickness or 2, t.glowSpeed or 4,
-                            cr, cg2, cb2, pv:GetWidth() or 72, pv:GetHeight() or 72)
-                    end
+                    Glows.StartSpecGlow(gov, spec, pv:GetWidth() or 72, pv:GetHeight() or 72, "engine", Glows.PANEL_EXTRA)
                     -- One overlay: the first qualifying glow tile wins.
                     pv._dmGlowUsed = true
                 end

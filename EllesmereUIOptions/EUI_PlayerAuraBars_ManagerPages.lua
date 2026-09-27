@@ -1676,27 +1676,10 @@ local function BuildFxEffects(frame, sy, cfg, apply)
 
     local list = cfg.fxList or {}
 
-    -- Only offer styles PAB_ApplyDmFx can actually render as selected
-    -- live: every driver-ticked style (procedural/buttonGlow/
-    -- autocast/shapeGlow) gets unconditionally remapped to a FlipBook-safe
-    -- style on real AuraButtons -- confirmed permanent in Blizzard's own
-    -- PTR 12.1 source (Blizzard_AuraButton.xml: useForbiddenObjectTable=
-    -- "true" + ForbiddenAspects incl. ChangeParent, baked into the base
-    -- template, not combat-conditional) -- so picking one here never
-    -- actually shows live. Mirrors Glows.RestrictionSafeStyle's own gate
-    -- (EllesmereUI_Glows.lua) rather than duplicating the style-name list.
-    -- Re-include if Blizzard ever exposes a supported extension point.
-    local GLOW_VALUES = { [0] = "None" }
-    local GLOW_ORDER = { 0 }
-    local Styles = EllesmereUI.Glows and EllesmereUI.Glows.STYLES
-    if Styles then
-        for i, entry in ipairs(Styles) do
-            if not (entry.procedural or entry.buttonGlow or entry.autocast or entry.shapeGlow) then
-                GLOW_VALUES[i] = entry.name
-                GLOW_ORDER[#GLOW_ORDER + 1] = i
-            end
-        end
-    end
+    -- Real AuraButtons forbid driver-ticked glows (Blizzard_AuraButton.xml:
+    -- ForbiddenAspects baked into the template), so the icon glow is an engine
+    -- host: the shared controls offer only what renders there.
+    local GO = EllesmereUI.GlowOptions
 
     -- One "ICON EFFECTS" section block per list entry.
     for bi = 1, #list do
@@ -1736,17 +1719,17 @@ local function BuildFxEffects(frame, sy, cfg, apply)
             end)
         end
 
-        -- Row 1: Filters | Icon Glow (+ class/custom swatches)
+        -- Row 1: Filters | Icon Glow (shared glow controls)
+        local glowDesc = GO and GO.PrefixSite(function() return e end, "glow", "engine", apply)
+        -- The half next to Filters is too narrow for the color swatches.
+        if glowDesc then glowDesc.colorInCog = true end
         local row
         row, hh = W:DualRow(frame, sy,
             { type = "dropdown", text = "Filters",
               values = { __placeholder = "..." }, order = { "__placeholder" },
               getValue = function() return "__placeholder" end,
               setValue = function() end },
-            { type = "dropdown", text = "Icon Glow",
-              values = GLOW_VALUES, order = GLOW_ORDER,
-              getValue = function() return e.glowType or 0 end,
-              setValue = function(v) e.glowType = v; apply(); EllesmereUI:RefreshPage() end }); sy = sy - hh
+            glowDesc and GO.DropdownSpec(glowDesc, "Icon Glow") or { type = "label", text = "" }); sy = sy - hh
         do
             local rgn = row._leftRegion
             if rgn._control then rgn._control:Hide() end
@@ -1763,62 +1746,7 @@ local function BuildFxEffects(frame, sy, cfg, apply)
             rgn._control = cbDD; rgn._lastInline = nil
             if cbRefresh then EllesmereUI.RegisterWidgetRefresh(cbRefresh) end
         end
-        do
-            local rgn = row._rightRegion
-            local ctrl = rgn._control
-
-            local classSwatch, updateClassSwatch = EllesmereUI.BuildColorSwatch(
-                rgn, row:GetFrameLevel() + 3,
-                function()
-                    local _, classFile = UnitClass("player")
-                    local cc = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
-                    if cc then return cc.r, cc.g, cc.b end
-                    return 1, 0.82, 0
-                end,
-                function() end,
-                false, 20)
-            PP.Point(classSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
-            classSwatch:SetScript("OnClick", function()
-                e.glowClassColor = true; apply(); EllesmereUI:RefreshPage()
-            end)
-            classSwatch:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(classSwatch, "Class Colored")
-            end)
-            classSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            local glowSwatch, updateGlowSwatch = EllesmereUI.BuildColorSwatch(
-                rgn, row:GetFrameLevel() + 3,
-                function() return e.glowR or 1.0, e.glowG or 0.776, e.glowB or 0.376 end,
-                function(r, g, b)
-                    e.glowR, e.glowG, e.glowB = r, g, b
-                    apply()
-                end,
-                false, 20)
-            PP.Point(glowSwatch, "RIGHT", classSwatch, "LEFT", -8, 0)
-            glowSwatch:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(glowSwatch, "Custom Colored")
-            end)
-            glowSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            -- Click the dimmed custom swatch to switch back from class color.
-            local origGlowClick = glowSwatch:GetScript("OnClick")
-            glowSwatch:SetScript("OnClick", function(self, ...)
-                if e.glowClassColor then
-                    e.glowClassColor = false; apply(); EllesmereUI:RefreshPage()
-                    return
-                end
-                if (e.glowType or 0) == 0 then return end
-                if origGlowClick then origGlowClick(self, ...) end
-            end)
-
-            local function UpdateFxGlowState()
-                local noGlow = (e.glowType or 0) == 0
-                local isClassColored = e.glowClassColor
-                glowSwatch:SetAlpha((isClassColored or noGlow) and 0.3 or 1)
-                classSwatch:SetAlpha((isClassColored and not noGlow) and 1 or 0.3)
-            end
-            EllesmereUI.RegisterWidgetRefresh(function() updateGlowSwatch(); updateClassSwatch(); UpdateFxGlowState() end)
-            UpdateFxGlowState()
-        end
+        if glowDesc then GO.AttachInline(row._rightRegion, glowDesc) end
 
         -- Row 2: Border (+ swatch) | Size (icon size for the matched
         -- filters; 0 = the bar's own icon size).

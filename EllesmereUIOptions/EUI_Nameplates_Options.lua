@@ -2689,6 +2689,111 @@ initFrame:SetScript("OnEvent", function(self)
         end
     end
 
+    ---------------------------------------------------------------------------
+    --  Glow sites: the Dispel and Important Cast glows as shared glow
+    --  descriptors, used by the page rows and the Global Settings Glows page.
+    ---------------------------------------------------------------------------
+    local npDispelGlowDesc, npImpCastGlowDesc
+    do
+        local GO = EllesmereUI.GlowOptions
+        local function RefreshDispel() RefreshAllAuras(); UpdatePreview() end
+        -- Engine aura buttons (no Auto-Cast/Shape); an unset color is the
+        -- suite default (gold).
+        -- Blizzard Border: Blizzard's static stealable art, outside the view.
+        local BLIZZ_BORDER = EllesmereUI.Glows.STEALABLE_BORDER
+        npDispelGlowDesc = GO and {
+            view = ns.NP_GLOW_VIEW, host = "engine",
+            extras = BLIZZ_BORDER and { { value = BLIZZ_BORDER, label = "Blizzard Border", style = BLIZZ_BORDER } } or nil,
+            caps = { mode = true, params = true, bg = true },
+            defaultColor = EllesmereUI.Glows and EllesmereUI.Glows.DEFAULT_COLOR,
+            isOff = function() return DBVal("dispelGlow") ~= true end,
+            -- Color by Type replaces the swatch color on every group.
+            colorDisabled = function() return DBVal("dispelGlowUseTypeColor") == true end,
+            colorDisabledTooltip = "Color by Type (Magic/Enrage)",
+            onChange = RefreshDispel,
+            get = function(f)
+                local d = DB()
+                if f == "style" then return ns.GetDispelGlowStyle and ns.GetDispelGlowStyle() or 2
+                elseif f == "mode" then return d.dispelGlowColorMode or (d.dispelGlowColor and "custom" or "default")
+                end
+                return EllesmereUI.GlowOptions.FlatGet(d, "dispelGlow", f)
+            end,
+            set = function(f, a, b2, c2)
+                local d = DB()
+                if f == "style" then
+                    if a == 0 then d.dispelGlow = false else d.dispelGlow = true; d.dispelGlowStyle = a end
+                elseif f == "mode" then d.dispelGlowColorMode = a
+                else EllesmereUI.GlowOptions.FlatSet(d, "dispelGlow", f, a, b2, c2)
+                end
+            end,
+            -- off->on pays the per-plate aura-watcher cost -- prompt like other performance-priced enables; already-on style switches never prompt.
+            confirm = function(v, commit)
+                if v ~= 0 and DBVal("dispelGlow") ~= true then
+                    EllesmereUI:ShowConfirmPopup({
+                        title       = "Dispel Glow",
+                        message     = "Dispel Glow may cause a slight loss in performance efficiency. Do you want to enable it?",
+                        confirmText = "Enable",
+                        cancelText  = "Cancel",
+                        onConfirm   = commit,
+                        onCancel    = function()
+                            C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
+                        end,
+                    })
+                    return
+                end
+                commit()
+            end,
+            -- Magic buffs and enrages are separate groups in the buff row, so the
+            -- color can follow the type; it overrides the color above per group.
+            cogRows = {
+                { type="toggle", label="Color by Type (Magic/Enrage)",
+                  get=function() return DBVal("dispelGlowUseTypeColor") or false end,
+                  set=function(v)
+                      DB().dispelGlowUseTypeColor = v
+                      RefreshDispel()
+                      EllesmereUI:RefreshPage()
+                  end },
+            },
+        }
+        -- The cast bar is a bar host (no Shape).
+        npImpCastGlowDesc = GO and {
+            view = ns.NP_GLOW_VIEW, host = "bar", excludes = EllesmereUI.Glows.RECT_EXCLUDES,
+            caps = { mode = true, params = true, bg = true },
+            defaultColor = { r = 1, g = 0.2, b = 0.2 },
+            isOff = function()
+                local d = DB()
+                local on = d and d.importantCastGlow
+                if on == nil then on = defaults.importantCastGlow end
+                return not on
+            end,
+            onChange = RefreshAllPlates,
+            get = function(f)
+                local d = DB()
+                if f == "style" then return d.importantCastGlowStyle or defaults.importantCastGlowStyle or 1
+                elseif f == "mode" then return d.importantCastGlowColorMode or "custom"
+                end
+                return EllesmereUI.GlowOptions.FlatGet(d, "importantCastGlow", f, defaults)
+            end,
+            set = function(f, a, b2, c2)
+                local d = DB()
+                if f == "style" then
+                    if a == 0 then d.importantCastGlow = false
+                    else d.importantCastGlow = true; d.importantCastGlowStyle = a end
+                elseif f == "mode" then d.importantCastGlowColorMode = a
+                else EllesmereUI.GlowOptions.FlatSet(d, "importantCastGlow", f, a, b2, c2)
+                end
+            end,
+        }
+        if GO then
+            GO.RegisterSite({ id = "np_dispel", label = "Dispel Glow", group = "module",
+                module = "EllesmereUINameplates", page = PAGE_GENERAL, section = SECTION_AURA,
+                highlight = "Dispel Glow Style", desc = npDispelGlowDesc })
+            GO.RegisterSite({ id = "np_importantcast", label = "Important Cast Glow", group = "module",
+                module = "EllesmereUINameplates", page = PAGE_DISPLAY, section = SECTION_CASTBAR,
+                highlight = "Important Cast Glow", desc = npImpCastGlowDesc })
+        end
+    end
+
     local function BuildGeneralPage(pageName, parent, yOffset)
         local W = EllesmereUI.Widgets
         local y = yOffset
@@ -3304,6 +3409,9 @@ initFrame:SetScript("OnEvent", function(self)
         local debuffRow1
             debuffRow1, h = W:DualRow(parent, y, maxDbfCfg, { type="label", text="" });  y = y - h
 
+        -- Pandemic Glow: hidden while nameplate auras have no pandemic renderer
+        -- (ns.NP_PandemicGlowRendered). Keys stay; the CDM pandemic sync skips them.
+        if ns.NP_PandemicGlowRendered then
         -- Helper: pandemic glow is off when style is "None"
         local function pandemicOff()
             return DBVal("pandemicGlow") ~= true
@@ -3660,79 +3768,13 @@ initFrame:SetScript("OnEvent", function(self)
             })
         end
 
+        end -- NP_PandemicGlowRendered
+
         -- --- Dispellable Buff Glow ----------------------------------------
-        local function dispelGlowOff()
-            return DBVal("dispelGlow") ~= true
-        end
-
-        -- Shared graying for inline swatch/eye: the glow controls follow the
-        -- glow's own enable only -- the Enemy Buff Filter never locks them
-        -- (user-directed 2026-08-16: the glow styles the dispellable GROUP,
-        -- independent of which filter mode decides what shows).
-        -- checkTypeColor additionally locks the custom color swatch, which
-        -- per-type coloring replaces.
-        local function dispelGlowLocked(checkTypeColor)
-            if dispelGlowOff() then return true end
-            return checkTypeColor and DBVal("dispelGlowUseTypeColor") == true
-        end
-
-        local dispelGlowStyleValues = { [0] = "None" }
-        local dispelGlowStyleOrder = { 0 }
-        for i, entry in ipairs(ns.PANDEMIC_GLOW_STYLES) do
-            -- Dispel glow lives on the forbidden aura-button subtree; Auto-Cast Shine has no C-side equivalent there (stale picks fall back to Modern WoW Glow).
-            if not entry.autocast then
-                dispelGlowStyleValues[i] = entry.name
-                dispelGlowStyleOrder[#dispelGlowStyleOrder + 1] = i
-            end
-        end
-        -- Blizzard's static stealable border art (outside the style list).
-        local DISPEL_BLIZZ = EllesmereUI.Glows and EllesmereUI.Glows.STEALABLE_BORDER
-        if DISPEL_BLIZZ then
-            dispelGlowStyleValues[DISPEL_BLIZZ] = "Blizzard Border"
-            dispelGlowStyleOrder[#dispelGlowStyleOrder + 1] = DISPEL_BLIZZ
-        end
-
-        local dispelGlowDropdown = {
-            type="dropdown", text="Dispel Glow Style",
-            values=dispelGlowStyleValues,
-            getValue=function()
-                if dispelGlowOff() then return 0 end
-                local raw = ns.GetDispelGlowStyle and ns.GetDispelGlowStyle() or (DBVal("dispelGlowStyle") or 2)
-                if type(raw) ~= "number" then return 2 end
-                if raw == DISPEL_BLIZZ then return raw end
-                if raw < 1 or raw > #ns.PANDEMIC_GLOW_STYLES then return 2 end
-                return raw
-            end,
-            setValue=function(v)
-                local function applyStyle()
-                    if v == 0 then
-                        DB().dispelGlow = false
-                    else
-                        DB().dispelGlow = true
-                        DB().dispelGlowStyle = v
-                    end
-                    RefreshAllAuras()
-                    UpdatePreview()
-                    C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
-                end
-                -- off->on pays the per-plate aura-watcher cost -- prompt like other performance-priced enables; already-on style switches never prompt.
-                if v ~= 0 and DBVal("dispelGlow") ~= true then
-                    EllesmereUI:ShowConfirmPopup({
-                        title       = "Dispel Glow",
-                        message     = "Dispel Glow may cause a slight loss in performance efficiency. Do you want to enable it?",
-                        confirmText = "Enable",
-                        cancelText  = "Cancel",
-                        onConfirm   = applyStyle,
-                        onCancel    = function()
-                            C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
-                        end,
-                    })
-                    return
-                end
-                applyStyle()
-            end,
-            order=dispelGlowStyleOrder,
-        }
+        local GO = EllesmereUI.GlowOptions
+        local dispelDesc = npDispelGlowDesc
+        local dispelGlowDropdown = dispelDesc and GO.DropdownSpec(dispelDesc, "Dispel Glow Style")
+            or { type="label", text="" }
         -- Enemy Buff Filter (replaces the retired Show All Enemy Buffs toggle;
         -- npEnemyBuffFilter, default "important" for EVERYONE -- a deliberate
         -- new default, the old key is an inert orphan). UNION semantics
@@ -3762,71 +3804,7 @@ initFrame:SetScript("OnEvent", function(self)
         local dispelGlowRow
         dispelGlowRow, h = W:DualRow(parent, y, buffFilterDropdown, dispelGlowDropdown);  y = y - h
 
-        -- Inline color swatch for dispel glow
-        if not EllesmereUI._prebuilding then
-            local glowColorGet = function()
-                local c = DB().dispelGlowColor or defaults.dispelGlowColor
-                return c.r, c.g, c.b
-            end
-            local glowColorSet = function(r, g, b)
-                DB().dispelGlowColor = { r = r, g = g, b = b }
-                RefreshAllAuras()
-                UpdatePreview()
-            end
-            -- Dispel Glow Style lives in the RIGHT slot (the Enemy Buff Filter
-            -- dropdown took the left), so its swatch and eye follow it there.
-            local leftRgn = dispelGlowRow._rightRegion
-            local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, glowColorGet, glowColorSet, nil, 20)
-            PP.Point(swatch, "RIGHT", leftRgn._control, "LEFT", -12, 0)
-            leftRgn._lastInline = swatch
-            -- Blocking overlay (canonical inline disabled-state pattern):
-            -- catches hover while the swatch is locked and names WHICH of the
-            -- two conditions locks it -- no glow style chosen, or per-type
-            -- coloring replacing the custom color.
-            local block = CreateFrame("Frame", nil, swatch)
-            block:SetAllPoints()
-            block:SetFrameLevel(swatch:GetFrameLevel() + 10)
-            block:EnableMouse(true)
-            block:SetScript("OnEnter", function()
-                if dispelGlowOff() then
-                    EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip("a Dispel Glow Style"))
-                else
-                    EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip("Color by Type", "disabled"))
-                end
-            end)
-            block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            local function RefreshGlowSwatch()
-                local off = dispelGlowLocked(true)
-                swatch:SetAlpha(off and 0.15 or 1)
-                swatch:EnableMouse(not off)
-                block:SetShown(off)
-                updateSwatch()
-            end
-            EllesmereUI.RegisterWidgetRefresh(RefreshGlowSwatch)
-            RefreshGlowSwatch()
-        end
-
-        -- Inline cog on Dispel Glow Style: holds the per-type color option
-        -- (Magic buffs and enrages are separate groups in the buff row, so
-        -- the color can follow the type). Chain: [cog][swatch][dropdown].
-        if not EllesmereUI._prebuilding then
-            local leftRgn = dispelGlowRow._rightRegion
-            EllesmereUI.BuildInlineCog(leftRgn, {
-                disabled = dispelGlowOff,
-                disabledTooltip = "a Dispel Glow Style",
-                title = "Dispel Glow",
-                rows = {
-                    { type="toggle", label="Color by Type (Magic/Enrage)",
-                      get=function() return DBVal("dispelGlowUseTypeColor") or false end,
-                      set=function(v)
-                          DB().dispelGlowUseTypeColor = v
-                          RefreshAllAuras()
-                          UpdatePreview()
-                          C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
-                      end },
-                },
-            })
-        end
+        if dispelDesc then GO.AttachInline(dispelGlowRow._rightRegion, dispelDesc) end
 
         _, h = W:Spacer(parent, y, 20);  y = y - h
 
@@ -7459,56 +7437,16 @@ initFrame:SetScript("OnEvent", function(self)
             })
         end
 
-        -- Important Cast Glow dropdown + inline color swatch + cog
+        -- Important Cast Glow: shared glow controls (cast bar = bar host) + preview
         do
-            local function impCastOff()
-                local db = DB()
-                local on = db and db.importantCastGlow
-                if on == nil then on = defaults.importantCastGlow end
-                return not on
-            end
-            -- Assigned once the preview frame exists, below. Forward-declared because
-            -- the dropdown, swatch and cog handlers are all built before that point
-            -- and every one of them re-renders the preview.
-            local RefreshImpCastPreview = function() end
-
-            local function impCastAntsOff()
-                if impCastOff() then return true end
-                local raw = DB().importantCastGlowStyle or defaults.importantCastGlowStyle
-                return type(raw) ~= "number" or raw ~= 1
-            end
-
-            -- Same list, same indices as the Pandemic Glow dropdown above.
-            local impGlowValues = { [0] = "None" }
-            local impGlowOrder = { 0 }
-            for i, entry in ipairs(ns.PANDEMIC_GLOW_STYLES) do
-                impGlowValues[i] = entry.name
-                impGlowOrder[#impGlowOrder + 1] = i
-            end
+            local GO = EllesmereUI.GlowOptions
+            local impDesc = npImpCastGlowDesc
 
             local impGlowRow
             impGlowRow, h = W:DualRow(parent, y,
-                { type="dropdown", text="Important Cast Glow",
-                  values=impGlowValues, order=impGlowOrder,
-                  getValue=function()
-                    if impCastOff() then return 0 end
-                    local raw = DB().importantCastGlowStyle or defaults.importantCastGlowStyle or 1
-                    if type(raw) ~= "number" then return 1 end
-                    if raw < 1 or raw > #ns.PANDEMIC_GLOW_STYLES then return 1 end
-                    return raw
-                  end,
-                  setValue=function(v)
-                    if v == 0 then
-                        DB().importantCastGlow = false
-                    else
-                        DB().importantCastGlow = true
-                        DB().importantCastGlowStyle = v
-                    end
-                    RefreshAllPlates()
-                    RefreshImpCastPreview()
-                    C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
-                  end,
-                  tooltip="Show a glow on the cast bar when the enemy is casting a spell Blizzard marks as important." },
+                impDesc and GO.DropdownSpec(impDesc, "Important Cast Glow",
+                    "Show a glow on the cast bar when the enemy is casting a spell Blizzard marks as important.")
+                    or { type="label", text="" },
                 { type="toggle", text="Casts In Front of Nameplates",
                   tooltip="Forces all casts to be shown in front of nameplates for visual clarity",
                   getValue=function() return DBVal("castOverlayEnabled") == true end,
@@ -7517,122 +7455,20 @@ initFrame:SetScript("OnEvent", function(self)
                     ns.RefreshAllSettings()
                   end });  y = y - h
 
-            -- Inline color swatch
-            if not EllesmereUI._prebuilding then
+            if impDesc and not EllesmereUI._prebuilding then
                 local leftRgn = impGlowRow._leftRegion
-                local ctrl = leftRgn and leftRgn._control
-                if ctrl and EllesmereUI.BuildColorSwatch then
-                    local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
-                        leftRgn, impGlowRow:GetFrameLevel() + 3,
-                        function()
-                            local c = DB().importantCastGlowColor or defaults.importantCastGlowColor
-                            return c.r or 1, c.g or 0.2, c.b or 0.2
-                        end,
-                        function(r, g, b)
-                            DB().importantCastGlowColor = { r = r, g = g, b = b }
-                            RefreshAllPlates()
-                            RefreshImpCastPreview()
-                        end, nil, 20)
-                    PP.Point(swatch, "RIGHT", ctrl, "LEFT", -12, 0)
-                    leftRgn._lastInline = swatch
-                    EllesmereUI.RegisterWidgetRefresh(function()
-                        local off = impCastOff()
-                        swatch:SetAlpha(off and 0.15 or 1)
-                        swatch:EnableMouse(not off)
-                        updateSwatch()
-                    end)
-                    swatch:SetAlpha(impCastOff() and 0.15 or 1)
-                    swatch:EnableMouse(not impCastOff())
-                end
-            end
-
-            -- Cog popup for Pixel Glow settings.
-            if not EllesmereUI._prebuilding then
-                local leftRgn = impGlowRow._leftRegion
-                local cogBtn = EllesmereUI.BuildInlineCog(leftRgn, {
-                    chain = false, anchorTo = leftRgn._lastInline, gap = leftRgn._lastInline and 6 or 8,
-                    tip = "Pixel Glow Settings",
-                    disabled = impCastAntsOff,
-                    disabledTooltip = "This option requires Pixel Glow to be the selected glow type",
-                    title = "Pixel Glow Settings",
-                    rows = {
-                        { type = "slider", label = "Lines", min = 2, max = 16, step = 1,
-                          get = function() return DB().importantCastGlowLines or defaults.importantCastGlowLines or 8 end,
-                          set = function(v) DB().importantCastGlowLines = v; RefreshAllPlates(); RefreshImpCastPreview() end },
-                        { type = "slider", label = "Thickness", min = 1, max = 4, step = 1,
-                          get = function() return DB().importantCastGlowThickness or defaults.importantCastGlowThickness or 2 end,
-                          set = function(v) DB().importantCastGlowThickness = v; RefreshAllPlates(); RefreshImpCastPreview() end },
-                        { type = "slider", label = "Speed", min = 1, max = 8, step = 1,
-                          get = function() local s = DB().importantCastGlowSpeed or defaults.importantCastGlowSpeed or 4; return 9 - s end,
-                          set = function(v) DB().importantCastGlowSpeed = 9 - v; RefreshAllPlates(); RefreshImpCastPreview() end },
-                        { type = "toggle", label = "Background",
-                          get = function() return DB().importantCastGlowBackground == true end,
-                          set = function(v) DB().importantCastGlowBackground = v and true or nil; RefreshAllPlates(); RefreshImpCastPreview() end },
-                        { type = "colorpicker", label = "Background Color",
-                          get = function()
-                              local c = DB().importantCastGlowBackgroundColor or defaults.importantCastGlowBackgroundColor or { r = 0, g = 0, b = 0 }
-                              return c.r or 0, c.g or 0, c.b or 0
-                          end,
-                          set = function(r, g, b) DB().importantCastGlowBackgroundColor = { r = r, g = g, b = b }; RefreshAllPlates(); RefreshImpCastPreview() end,
-                          disabled = function() return DB().importantCastGlowBackground ~= true end,
-                          disabledTooltip = "Pixel Glow Background" },
-                    },
+                GO.AttachInline(leftRgn, impDesc)
+                -- Icon-sized preview in the inline chain (the right half is a real
+                -- setting); -12: the widest FlipBook styles overhang ~8px per side.
+                local pv = GO.BuildPreview(leftRgn, impDesc, {
+                    bar = false, width = 26, height = 26,
+                    icon = function() return displayCastIcons[_previewCastIconIdx or 1] end,
+                    anchor = leftRgn._lastInline, x = -12,
                 })
-
-                -- Glow preview. The Pandemic Glow row hosts its preview in the row's
-                -- right half; here that half is a real setting, so the preview joins
-                -- the inline chain instead and sits to the left of the cog.
-                local IMP_PREVIEW_SIZE = 26
-                local previewFrame = CreateFrame("Frame", nil, leftRgn)
-                PP.Size(previewFrame, IMP_PREVIEW_SIZE, IMP_PREVIEW_SIZE)
-                -- -12 rather than the chain's usual -6: the widest FlipBook styles
-                -- draw roughly 8px past the icon edge on each side.
-                PP.Point(previewFrame, "RIGHT", cogBtn, "LEFT", -12, 0)
-                previewFrame:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-
-                local previewTex = previewFrame:CreateTexture(nil, "ARTWORK")
-                previewTex:SetAllPoints()
-                previewTex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-                PP.CreateBorder(previewFrame, 0, 0, 0, 1, 1, "OVERLAY", 7)
-
-                -- Leftmost inline item on this half; the row label is bounded against
-                -- it (region._lastInline, see EllesmereUI_Widgets.lua).
-                leftRgn._lastInline = previewFrame
-
-                -- Renders through the SAME dispatcher, style list and stored options
-                -- the nameplate itself uses, so the preview cannot drift from the real
-                -- cast bar. Assigns the forward-declared local from the top of the block.
-                RefreshImpCastPreview = function()
-                    ns.StopAllGlows(previewFrame)
-                    previewTex:SetTexture(displayCastIcons[_previewCastIconIdx or 1])
-
-                    local off = impCastOff()
-                    previewFrame:SetAlpha(off and 0.3 or 1)
-                    if off then return end
-
-                    local styles = ns.PANDEMIC_GLOW_STYLES
-                    local style = DB().importantCastGlowStyle or defaults.importantCastGlowStyle or 1
-                    if type(style) ~= "number" or style < 1 or style > #styles then style = 1 end
-
-                    local c = DB().importantCastGlowColor or defaults.importantCastGlowColor
-                    local opts
-                    if style == 1 then
-                        local bgc = DB().importantCastGlowBackgroundColor
-                            or defaults.importantCastGlowBackgroundColor or { r = 0, g = 0, b = 0 }
-                        opts = {
-                            N      = DB().importantCastGlowLines or defaults.importantCastGlowLines,
-                            th     = DB().importantCastGlowThickness or defaults.importantCastGlowThickness,
-                            period = DB().importantCastGlowSpeed or defaults.importantCastGlowSpeed,
-                            bg     = DB().importantCastGlowBackground == true
-                                     and { r = bgc.r or 0, g = bgc.g or 0, b = bgc.b or 0 } or nil,
-                        }
-                    end
-                    ns.StartGlow(previewFrame, ns.NP_TO_SHARED_GLOW[style] or 1,
-                        IMP_PREVIEW_SIZE, c.r, c.g, c.b, opts, IMP_PREVIEW_SIZE)
+                if pv then
+                    pv:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
+                    leftRgn._lastInline = pv
                 end
-
-                EllesmereUI.RegisterWidgetRefresh(RefreshImpCastPreview)
-                RefreshImpCastPreview()
             end
         end
 

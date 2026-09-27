@@ -4119,6 +4119,7 @@ ns.UF_UNMASKED_RING = { pixelsCircle = 4 }
 -- Round shapes: the only ones that take the Outer Ring and the Inner Shadow.
 ns.UF_ROUND_SHAPES = { circle = true, pixelsCircle = true }
 ns.UF_PORTRAIT_INNER_SHADOW = "Interface\\AddOns\\EllesmereUI\\media\\portraits\\pixels_inner_shadow.tga"
+ns.UF_THIN_BORDER_RING = "Interface\\AddOns\\EllesmereUI\\media\\portraits\\pixels_ring_thin_border.tga"
 
 -- Outer Ring art for a detachedPortraitOuterRing value, or nil (nothing to
 -- draw). "border" follows the frame's Border Style (frameTex): its ring
@@ -4129,6 +4130,7 @@ function ns.UF_OuterRingPath(ringKey, frameTex)
     if ringKey == "pixels" or ringKey == "pixels-textured" then return GBC(ringKey, "ring") end
     if ringKey == "pixels-shadow" then return GBC("pixels", "ringShadow") end
     if ringKey == "pixels-textured-shadow" then return GBC("pixels-textured", "ringShadow") end
+    if ringKey == "thin-border" then return ns.UF_THIN_BORDER_RING end
     return nil
 end
 
@@ -8165,10 +8167,11 @@ end
 
 -- Important Cast Glow (target/focus), mirrors Nameplates.
 -- The secret IsSpellImportant flag only drives overlay alpha.
-ns.UF_IMPORTANT_GLOW_STYLES = { 1, 2, 3, 5, 6, 7 }
 do
     local IMP_GLOW_COLOR = { r = 1, g = 0.2, b = 0.2 }
     local IMP_GLOW_BG_COLOR = { r = 0, g = 0, b = 0 }
+    -- One scratch spec for both cast bars: StartSpecGlow reads it synchronously.
+    local impSpec = {}
 
     ns.ClearUnitFrameImportantGlow = function(castbar)
         local ov = castbar and castbar._importantOverlay
@@ -8184,7 +8187,7 @@ do
     ns.UpdateUnitFrameImportantGlow = function(castbar)
         local s = castbar and castbar._eufSettings
         local Glows = EllesmereUI.Glows
-        if not (s and s.castbarImportantGlow and Glows and Glows.StartGlow
+        if not (s and s.castbarImportantGlow and Glows and Glows.StartSpecGlow
                 and C_Spell and C_Spell.IsSpellImportant) then
             ns.ClearUnitFrameImportantGlow(castbar)
             return
@@ -8203,16 +8206,21 @@ do
             ov:SetAllPoints(castbar)
             ov:EnableMouse(false)
             castbar._importantOverlay = ov
-            castbar._impGlowLook = {}
-            castbar._impGlowOpts = {}
         end
         ov:SetFrameLevel(castbar:GetFrameLevel() + 5)
 
-        local style = 1
-        for _, idx in ipairs(ns.UF_IMPORTANT_GLOW_STYLES) do
-            if s.castbarImportantGlowStyle == idx then style = idx; break end
-        end
         local c = s.castbarImportantGlowColor or IMP_GLOW_COLOR
+        local bgc = s.castbarImportantGlowBackgroundColor or IMP_GLOW_BG_COLOR
+        local spec = impSpec
+        spec.style = s.castbarImportantGlowStyle or 1
+        -- Texture styles stretch on the bar: they draw as Pixel.
+        spec.excludes = Glows.RECT_EXCLUDES
+        spec.r, spec.g, spec.b = Glows.ResolveColor(s.castbarImportantGlowColorMode or "custom", c.r, c.g, c.b)
+        spec.lines = s.castbarImportantGlowLines or 8
+        spec.thickness = s.castbarImportantGlowThickness or 2
+        spec.speed = s.castbarImportantGlowSpeed or 4
+        spec.bg = (s.castbarImportantGlowBackground == true) or nil
+        spec.bgR, spec.bgG, spec.bgB = bgc.r, bgc.g, bgc.b
         local pW, pH = castbar:GetWidth(), castbar:GetHeight()
         -- Secret while the bar rides the stock-style aura block: use the last plain read
         -- (the bar never resizes in combat), else the configured holder size.
@@ -8228,34 +8236,10 @@ do
         end
         if pW < 5 then pW = 100 end
         if pH < 5 then pH = 14 end
-        -- Lines/thickness/speed/background are Pixel Glow only; nil for other styles.
-        local N, th, period, bg
-        if style == 1 then
-            N = s.castbarImportantGlowLines or 8
-            th = s.castbarImportantGlowThickness or 2
-            period = s.castbarImportantGlowSpeed or 4
-            if s.castbarImportantGlowBackground == true then
-                bg = s.castbarImportantGlowBackgroundColor or IMP_GLOW_BG_COLOR
-            end
-        end
-
-        -- Restart only when the look changes: a settings change or target/focus swap
-        -- onto a unit already mid-cast keeps a running glow when nothing differs.
-        local L = castbar._impGlowLook
-        if not castbar._impGlowActive or L.style ~= style or L.r ~= c.r or L.g ~= c.g or L.b ~= c.b
-           or L.w ~= pW or L.h ~= pH or L.N ~= N or L.th ~= th or L.period ~= period
-           or L.bgR ~= (bg and bg.r) or L.bgG ~= (bg and bg.g) or L.bgB ~= (bg and bg.b) then
-            local o
-            if style == 1 then
-                o = castbar._impGlowOpts
-                o.N, o.th, o.period, o.bg = N, th, period, bg
-            end
-            Glows.StartGlow(ov, style, pW, c.r, c.g, c.b, o, pH)
-            L.style, L.r, L.g, L.b, L.w, L.h = style, c.r, c.g, c.b, pW, pH
-            L.N, L.th, L.period = N, th, period
-            L.bgR, L.bgG, L.bgB = bg and bg.r, bg and bg.g, bg and bg.b
-            castbar._impGlowActive = true
-        end
+        -- Restarts only when the look or the bar size changed, so back-to-back
+        -- casts keep the animation running.
+        Glows.StartSpecGlow(ov, spec, pW, pH, "bar")
+        castbar._impGlowActive = true
 
         ov:Show()
         ov:SetAlphaFromBoolean(isImportant)

@@ -1744,8 +1744,9 @@ local TBB_STYLE_KEYS = {
     "borderTextureOffset", "borderTextureOffsetY",
     "borderTextureShiftX", "borderTextureShiftY", "borderBehind",
     "stockBorderScale",
-    "pandemicGlow", "pandemicGlowStyle", "pandemicGlowColor",
+    "pandemicGlow", "pandemicGlowStyle", "pandemicGlowColor", "pandemicGlowMode",
     "pandemicGlowLines", "pandemicGlowThickness", "pandemicGlowSpeed",
+    "pandemicGlowBackground", "pandemicGlowBackgroundColor",
 }
 -- Appended rather than spelled out: a lane added to the shared list is copied with the
 -- rest of the style instead of silently staying behind on the source bar.
@@ -2120,12 +2121,12 @@ local function CreateTrackedBuffBarFrame(parent, idx)
     wrapFrame._gradTex  = nil
 
     -- Text overlay: parented to wrapFrame (not bar) so bar's SetClipsChildren can't
-    -- chop text when font size exceeds bar height. Level sits above the border (bar+5
-    -- in ApplySettings, PP strips at +6) and the pandemic glow overlay (wrapFrame+7 =
-    -- bar+6), so timer/name/stacks render on top of both; keyed off bar so they track together.
+    -- chop text when font size exceeds bar height. Level sits above the border (bar+6
+    -- in ApplySettings, PP strips at +7) and the pandemic glow overlay (bar+8), so
+    -- timer/name/stacks render on top of both; keyed off bar so they track together.
     local textOverlay = CreateFrame("Frame", nil, wrapFrame)
     textOverlay:SetAllPoints(bar)
-    textOverlay:SetFrameLevel(bar:GetFrameLevel() + 7)
+    textOverlay:SetFrameLevel(bar:GetFrameLevel() + 9)
     wrapFrame._textOverlay = textOverlay
 
     -- Timer text
@@ -2169,12 +2170,12 @@ local function CreateTrackedBuffBarFrame(parent, idx)
     bdrContainer:Hide()
     wrapFrame._barBorder = bdrContainer
 
-    -- Pandemic glow overlay above the border, whose PP strips draw at +6
-    -- (border frame +5 plus the +1 the strip container adds), so a thick border
-    -- cannot bury the edge-hugging glow.
+    -- Pandemic glow overlay above the border, whose PP strips draw at bar+7
+    -- (border frame +6 plus the +1 the strip container adds), so a border
+    -- cannot bury the edge-hugging glow (wrapFrame+9 = bar+8).
     local panGlow = CreateFrame("Frame", nil, wrapFrame)
     panGlow:SetAllPoints(wrapFrame)
-    panGlow:SetFrameLevel(wrapFrame:GetFrameLevel() + 7)
+    panGlow:SetFrameLevel(wrapFrame:GetFrameLevel() + 9)
     panGlow:SetAlpha(0)
     panGlow:EnableMouse(false)
     wrapFrame._pandemicGlowOverlay = panGlow
@@ -2752,8 +2753,9 @@ local function ApplyTrackedBuffBarSettings(bar, cfg)
         -- loses the tie to them (created lazily, so they win) and vanishes the
         -- moment a threshold is crossed. Ticks and charge hash lines shift up
         -- in step to keep their order. The classic spark rides above the
-        -- chrome (+6) instead, as the vanilla spark draws over its frame.
-        if bar._sparkOverlay then bar._sparkOverlay:SetFrameLevel(sb:GetFrameLevel() + (classicBar and 7 or 3)) end
+        -- chrome instead, as the vanilla spark draws over its frame: sb+8, above
+        -- the pandemic glow (base+8), level with the text.
+        if bar._sparkOverlay then bar._sparkOverlay:SetFrameLevel(sb:GetFrameLevel() + (classicBar and 8 or 3)) end
         -- Tick overlay MUST be re-asserted here too: SetFrameStrata collapses descendant levels, so otherwise ticks land at a default level.
         if bar._tickOverlay then bar._tickOverlay:SetFrameLevel(sb:GetFrameLevel() + 4) end
         if bar._chargeHashOverlay then bar._chargeHashOverlay:SetFrameLevel(sb:GetFrameLevel() + 5) end
@@ -2762,8 +2764,9 @@ local function ApplyTrackedBuffBarSettings(bar, cfg)
         -- ties, putting ticks ON TOP of the border. One level up keeps the border above
         -- ticks; charge hash lines tie it and win via later creation, as intended.
         if bar._barBorder then bar._barBorder:SetFrameLevel(base + 6) end
-        if bar._pandemicGlowOverlay then bar._pandemicGlowOverlay:SetFrameLevel(base + 7) end
-        if bar._textOverlay then bar._textOverlay:SetFrameLevel(sb:GetFrameLevel() + 7) end
+        -- Glow +8: the border's PP strips draw at +7 and would tie it; text stays on top.
+        if bar._pandemicGlowOverlay then bar._pandemicGlowOverlay:SetFrameLevel(base + 8) end
+        if bar._textOverlay then bar._textOverlay:SetFrameLevel(sb:GetFrameLevel() + 8) end
     end
 
     -- width/height are always VISUAL dimensions describing the bar's TOTAL footprint,
@@ -4012,9 +4015,9 @@ local function UpdatePandemic(bar, cfg)
     -- Glow always wraps the whole bar: the overlay covers the entire wrapFrame footprint, so an enabled icon is included rather than glowed alone.
     local glowTarget = bar._pandemicGlowOverlay
 
-    local style = cfg.pandemicGlowStyle or 1
-    -- Only pixel glow (1) and autocast (4) render on the bar rectangle
-    if style ~= 1 and style ~= 4 then style = 1 end
+    -- Bar rectangle: Pixel Glow or Auto-Cast Shine only (texture styles stretch);
+    -- any other stored style, and Blizzard Default (-1), render as Pixel Glow.
+    local style = ns.PG_TbbEffectiveStyle and ns.PG_TbbEffectiveStyle(cfg) or 1
 
     -- Start/restart glow on style or target change
     if not bar._pandemicGlowActive or bar._pandemicGlowStyleIdx ~= style

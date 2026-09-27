@@ -1512,7 +1512,7 @@ end
 function PurgeGlow.Extra(button, d, style)
     ApplyUFText(button, d, style)
     local Glows = EllesmereUI.Glows
-    if not (Glows and Glows.StartEngineGlow) then return end
+    if not (Glows and Glows.StartSpecGlow and style.purgeSpec) then return end
     local host = d.ufPurgeGlow
     if not host then
         -- The first call runs inside initializeFrame, the button's one legal
@@ -1526,35 +1526,32 @@ function PurgeGlow.Extra(button, d, style)
         end
         host:EnableMouse(false)
         d.ufPurgeGlow = host
+        Glows.PrewarmEngineHost(host, style.width, style.height)
     end
-    local g, w, h = style.purgeGlow, style.width, style.height
-    local cr, cg, cb = style.purgeR, style.purgeG, style.purgeB
-    -- Blizzard Border: Blizzard's static stealable art instead of a glow.
-    if g == Glows.STEALABLE_BORDER then
-        if host._pgS ~= g or host._pgW ~= w or host._pgH ~= h
-           or host._pgR ~= cr or host._pgG ~= cg or host._pgB ~= cb then
-            if host._euiGlowActive then Glows.StopGlow(host) end
-            host:SetAlpha(1)
-            Glows.ShowStealableBorder(host, w, h, cr, cg, cb)
-            host._pgBorder = true
-            host._pgS, host._pgW, host._pgH = g, w, h
-            host._pgR, host._pgG, host._pgB = cr, cg, cb
-        end
-        return
-    end
-    if host._pgBorder then
-        Glows.HideStealableBorder(host)
-        host._pgBorder = nil
-    end
-    if (not host._euiGlowActive) or host._pgS ~= g or host._pgW ~= w or host._pgH ~= h
-       or host._pgR ~= cr or host._pgG ~= cg or host._pgB ~= cb then
-        -- C-side animations only (engine-button subtree); nil color = the
-        -- style's default look.
-        Glows.StartEngineGlow(host, g, w, cr, cg, cb, nil, h)
-        host._pgS, host._pgW, host._pgH = g, w, h
-        host._pgR, host._pgG, host._pgB = cr, cg, cb
-    end
+    -- C-side animations only (engine-button subtree); Blizzard Border
+    -- (static stealable art) renders through the same call.
+    Glows.StartSpecGlow(host, style.purgeSpec, style.width, style.height, "engine")
 end
+
+-- Unset color = "default" mode: the suite's default look (gold).
+function PurgeGlow.Spec(s)
+    local Glows = EllesmereUI.Glows
+    local c = s.buffPurgeGlowColor
+    local mode = s.buffPurgeGlowColorMode or (c and "custom" or "default")
+    local bgc = s.buffPurgeGlowBackgroundColor
+    local spec = {
+        style = s.buffPurgeGlow,
+        lines = s.buffPurgeGlowLines, thickness = s.buffPurgeGlowThickness,
+        speed = s.buffPurgeGlowSpeed,
+        bg = s.buffPurgeGlowBackground == true or nil,
+        bgR = bgc and bgc.r, bgG = bgc and bgc.g, bgB = bgc and bgc.b,
+    }
+    if Glows and Glows.ResolveColor then
+        spec.r, spec.g, spec.b = Glows.ResolveColor(mode, c and c.r, c and c.g, c and c.b)
+    end
+    return spec
+end
+ns.UF_PurgeGlowSpec = PurgeGlow.Spec
 
 -- Registers (and restyles on a fingerprint change) the glow style while the
 -- glow is on. Runs before any glow group is declared: initializeFrame
@@ -1563,11 +1560,11 @@ function PurgeGlow.Register(unit, s, frame, font)
     if not PurgeGlow.On(unit, s) then return end
     local key = PurgeGlow.StyleKey(unit)
     local style = BuildStyle(unit, "HELPFUL", s, frame)
-    local c = s.buffPurgeGlowColor
-    style.purgeGlow = s.buffPurgeGlow
-    style.purgeR, style.purgeG, style.purgeB = c and c.r, c and c.g, c and c.b
+    local sp = PurgeGlow.Spec(s)
+    style.purgeSpec = sp
     style.applyExtra = PurgeGlow.Extra
-    local v = StyleTableFP(style, font) .. "|" .. FP(style.purgeGlow, style.purgeR, style.purgeG, style.purgeB)
+    local v = StyleTableFP(style, font) .. "|" .. FP(sp.style, sp.r, sp.g, sp.b, sp.lines,
+        sp.thickness, sp.speed, sp.bg, sp.bgR, sp.bgG, sp.bgB)
     local st = ufFP[key]
     if not st then st = {}; ufFP[key] = st end
     if st.style ~= v then

@@ -1074,6 +1074,48 @@ initFrame:SetScript("OnEvent", function(self)
     ---------------------------------------------------------------------------
     --  Targeted Spell Bars page
     ---------------------------------------------------------------------------
+    ---------------------------------------------------------------------------
+    --  Glow site: the Targeted Spell Bars important cast glow as a shared glow
+    --  descriptor, used by the TSB page and the Global Settings Glows page. The
+    --  bar is an engine host by choice (zero per-frame Lua): C-side styles only.
+    ---------------------------------------------------------------------------
+    local mtImpGlowDesc
+    do
+        local GO = EllesmereUI.GlowOptions
+        local function TsbOff() local c = TSB(); return not (c and c.enabled == true) end
+        mtImpGlowDesc = GO and {
+            host = "engine", excludes = EllesmereUI.Glows.RECT_EXCLUDES,
+            caps = { mode = true, params = true, bg = true },
+            defaultColor = { r = 1, g = 0.2, b = 0.2 },
+            disabled = TsbOff, disabledTooltip = "Enable Targeted Spell Bars",
+            isOff = function() local c = TSB(); return not (c and c.importantGlow == true) end,
+            onChange = TSBRefresh,
+            get = function(f)
+                local c = TSB(); if not c then return nil end
+                if f == "style" then return c.importantGlowStyle or 1
+                elseif f == "mode" then return c.importantGlowColorMode or "custom"
+                elseif f == "color" then
+                    local col = c.importantGlowColor
+                    return (col and col.r) or 1, (col and col.g) or 0.2, (col and col.b) or 0.2
+                end
+                return EllesmereUI.GlowOptions.FlatGet(c, "importantGlow", f)
+            end,
+            set = function(f, a, b2, c2)
+                local c = TSB(); if not c then return end
+                if f == "style" then
+                    if a == 0 then c.importantGlow = false else c.importantGlow = true; c.importantGlowStyle = a end
+                elseif f == "mode" then c.importantGlowColorMode = a
+                else EllesmereUI.GlowOptions.FlatSet(c, "importantGlow", f, a, b2, c2)
+                end
+            end,
+        }
+        if GO then
+            GO.RegisterSite({ id = "mt_importantcast", label = "Important Cast Glow", group = "module",
+                module = "EllesmereUIMythicTimer", page = PAGE_TSB, section = "INTERRUPT AND VISIBILITY",
+                highlight = "Important Cast Glow", desc = mtImpGlowDesc })
+        end
+    end
+
     local function BuildTSBPage(pageName, parent, yOffset)
         _installCastPreviewAutoOff()
 
@@ -1314,21 +1356,8 @@ initFrame:SetScript("OnEvent", function(self)
         ---------------------------------------------------------------------
         _, h = W:SectionHeader(parent, "INTERRUPT AND VISIBILITY", y); y = y - h
 
-        -- Only styles with a genuine C-side twin via StartEngineGlow are
-        -- offered: Pixel/Action Button/GCD/Modern/Classic. Auto-Cast Shine and
-        -- Shape Glow have no C-side equivalent and silently remap inside the
-        -- engine, so a user picking them would see a different effect than
-        -- the name promises.
-        local impGlowValues, impGlowOrder = { [0] = "None" }, { 0 }
-        do
-            local ENGINE_SAFE_STYLES = { 1, 2, 5, 6, 7 }
-            local styles = EllesmereUI.Glows and EllesmereUI.Glows.STYLES
-            for _, idx in ipairs(ENGINE_SAFE_STYLES) do
-                local entry = styles and styles[idx]
-                impGlowValues[idx] = entry and entry.name or ("Style " .. idx)
-                impGlowOrder[#impGlowOrder + 1] = idx
-            end
-        end
+        local GO = EllesmereUI.GlowOptions
+        local mtDesc = mtImpGlowDesc
 
         -- Row: Cast Colors (always-on kick-ready/uninterruptible tints, no
         -- off switch; 4 swatches + cog for the separate opt-in Important
@@ -1385,25 +1414,9 @@ initFrame:SetScript("OnEvent", function(self)
                       TSBRefresh()
                   end },
               } },
-            { type="dropdown", text="Important Cast Glow",
-              disabled=Off, disabledTooltip=REQ,
-              values=impGlowValues, order=impGlowOrder,
-              tooltip="Glow the bar when the enemy casts a spell Blizzard flags as important.",
-              getValue=function()
-                  local c = TSB()
-                  if not (c and c.importantGlow == true) then return 0 end
-                  return c.importantGlowStyle or 1
-              end,
-              setValue=function(v)
-                  local c = TSB(); if not c then return end
-                  if v == 0 then
-                      c.importantGlow = false
-                  else
-                      c.importantGlow = true
-                      c.importantGlowStyle = v
-                  end
-                  TSBRefresh(); EllesmereUI:RefreshPage()
-              end });  y = y - h
+            mtDesc and GO.DropdownSpec(mtDesc, "Important Cast Glow",
+                "Glow the bar when the enemy casts a spell Blizzard flags as important.")
+                or { type="label", text="" });  y = y - h
 
         if not EllesmereUI._prebuilding then
             EllesmereUI.BuildInlineCog(row._leftRegion, { tip = "Important Cast Color",
@@ -1420,52 +1433,7 @@ initFrame:SetScript("OnEvent", function(self)
                 },
             })
 
-            local rightRgn = row._rightRegion
-            local ctrl = rightRgn and rightRgn._control
-            if ctrl and EllesmereUI.BuildColorSwatch then
-                local PP = EllesmereUI.PP
-                local function GlowOff()
-                    local c = TSB()
-                    return Off() or not (c and c.importantGlow == true)
-                end
-                local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
-                    rightRgn, row:GetFrameLevel() + 3,
-                    function()
-                        local c = TSB()
-                        local col = c and c.importantGlowColor
-                        return (col and col.r) or 1, (col and col.g) or 0.2, (col and col.b) or 0.2
-                    end,
-                    function(r, g, b)
-                        local c = TSB(); if not c then return end
-                        c.importantGlowColor = { r = r, g = g, b = b }
-                        TSBRefresh()
-                    end, nil, 20)
-                PP.Point(swatch, "RIGHT", ctrl, "LEFT", -12, 0)
-                rightRgn._lastInline = swatch
-                EllesmereUI.RegisterWidgetRefresh(function()
-                    local off = GlowOff()
-                    swatch:SetAlpha(off and 0.15 or 1)
-                    swatch:EnableMouse(not off)
-                    updateSwatch()
-                end)
-                swatch:SetAlpha(GlowOff() and 0.15 or 1)
-                swatch:EnableMouse(not GlowOff())
-            end
-
-            EllesmereUI.BuildInlineCog(row._rightRegion, { tip = "Important Cast Glow Settings",
-                title = "Important Cast Glow Settings",
-                rows = {
-                    { type="slider", label="Lines", min=2, max=16, step=1,
-                      get=function() local c = TSB(); return (c and c.importantGlowLines) or 8 end,
-                      set=function(v) local c = TSB(); if c then c.importantGlowLines = v; TSBRefresh() end end },
-                    { type="slider", label="Thickness", min=1, max=4, step=1,
-                      get=function() local c = TSB(); return (c and c.importantGlowThickness) or 2 end,
-                      set=function(v) local c = TSB(); if c then c.importantGlowThickness = v; TSBRefresh() end end },
-                    { type="slider", label="Speed", min=1, max=8, step=1,
-                      get=function() local c = TSB(); local s = (c and c.importantGlowSpeed) or 4; return 9 - s end,
-                      set=function(v) local c = TSB(); if c then c.importantGlowSpeed = 9 - v; TSBRefresh() end end },
-                },
-            })
+            if mtDesc then GO.AttachInline(row._rightRegion, mtDesc) end
         end
 
         -- Row: Fade Out of Interrupt Range | Show Raid Target Marker.

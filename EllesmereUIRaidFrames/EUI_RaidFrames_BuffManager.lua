@@ -3447,81 +3447,22 @@ function ns.BM_BuildPage(pageName, parent, yOffset)
             -- Display-level Icon Glow (v2): permanent, every visible icon of the
             -- group glows while shown. No Max Duration setting by design: the
             -- engine offers no baseline/cap on its duration bindings.
-            local GLOW_VALUES = { [0] = "None" }
-            local GLOW_ORDER = { 0 }
-            local Styles = EllesmereUI.Glows and EllesmereUI.Glows.STYLES
-            if Styles then
-                for i, entry in ipairs(Styles) do
-                    -- Auto-Cast Shine and Shape Glow excluded: they live on the forbidden
-                    -- slot-button subtree with no C-side equivalent to render there (stale saved picks fall back to Modern WoW Glow).
-                    if not (entry.shapeGlow or entry.autocast) then
-                        GLOW_VALUES[i] = entry.name
-                        GLOW_ORDER[#GLOW_ORDER + 1] = i
-                    end
-                end
-            end
+            local GO = EllesmereUI.GlowOptions
+            local glowDesc = GO and GO.PrefixSite(function() return ind end, "displayGlow", "engine", ReloadAndUpdate)
+            -- The color swatches take the free right half.
             local mdRow = SettingsRow(
-                { type="dropdown", text="Icon Glow",
-                  values=GLOW_VALUES, order=GLOW_ORDER,
-                  getValue=function() return ind.displayGlowType or 0 end,
-                  setValue=function(v) ind.displayGlowType = v; ReloadAndUpdate(); EllesmereUI:RefreshPage() end },
-                { type="label", text="" })
-            -- Inline class + custom color swatches, left of the dropdown.
-            local PPl = EllesmereUI.PanelPP or EllesmereUI.PP
-            local rightRgn = mdRow._leftRegion
-            local ctrl = rightRgn._control
-
-            local classSwatch, updateClassSwatch = EllesmereUI.BuildColorSwatch(
-                rightRgn, mdRow:GetFrameLevel() + 3,
-                function()
-                    local _, classFile = UnitClass("player")
-                    local cc = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
-                    if cc then return cc.r, cc.g, cc.b end
-                    return 1, 0.82, 0
-                end,
-                function() end,
-                false, 20)
-            PPl.Point(classSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
-            classSwatch:SetScript("OnClick", function()
-                ind.displayGlowClassColor = true; ReloadAndUpdate(); EllesmereUI:RefreshPage()
-            end)
-            classSwatch:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(classSwatch, "Class Colored")
-            end)
-            classSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            local glowSwatch, updateGlowSwatch = EllesmereUI.BuildColorSwatch(
-                rightRgn, mdRow:GetFrameLevel() + 3,
-                function() return ind.displayGlowR or 1.0, ind.displayGlowG or 0.776, ind.displayGlowB or 0.376 end,
-                function(r, g, b)
-                    ind.displayGlowR, ind.displayGlowG, ind.displayGlowB = r, g, b
-                    ReloadAndUpdate()
-                end,
-                false, 20)
-            PPl.Point(glowSwatch, "RIGHT", classSwatch, "LEFT", -8, 0)
-            glowSwatch:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(glowSwatch, "Custom Colored")
-            end)
-            glowSwatch:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-            -- Click the dimmed custom swatch to switch back from class color.
-            local origGlowClick = glowSwatch:GetScript("OnClick")
-            glowSwatch:SetScript("OnClick", function(self, ...)
-                if ind.displayGlowClassColor then
-                    ind.displayGlowClassColor = false; ReloadAndUpdate(); EllesmereUI:RefreshPage()
-                    return
+                glowDesc and GO.DropdownSpec(glowDesc, "Icon Glow") or { type="label", text="" },
+                { type="label", text=glowDesc and "Glow Color" or "" })
+            if glowDesc and not EllesmereUI._prebuilding then
+                local rgn = mdRow._leftRegion
+                GO.AttachInline(rgn, glowDesc, mdRow._rightRegion)
+                local pv = GO.BuildPreview(rgn, glowDesc, { bar = false, width = 26, height = 26,
+                    anchor = rgn._lastInline or rgn._control, x = -12 })
+                if pv then
+                    pv:SetFrameLevel(rgn:GetFrameLevel() + 5)
+                    rgn._lastInline = pv
                 end
-                if (ind.displayGlowType or 0) == 0 then return end
-                if origGlowClick then origGlowClick(self, ...) end
-            end)
-
-            local function UpdateDispGlowState()
-                local noGlow = (ind.displayGlowType or 0) == 0
-                local isClassColored = ind.displayGlowClassColor
-                glowSwatch:SetAlpha((isClassColored or noGlow) and 0.3 or 1)
-                classSwatch:SetAlpha((isClassColored and not noGlow) and 1 or 0.3)
             end
-            EllesmereUI.RegisterWidgetRefresh(function() updateGlowSwatch(); updateClassSwatch(); UpdateDispGlowState() end)
-            UpdateDispGlowState()
 
             -- THRESHOLD section (Enable, seconds, color, opacity)
             BuildThresholdRow()

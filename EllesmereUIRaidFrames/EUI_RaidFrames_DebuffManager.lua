@@ -428,7 +428,7 @@ local function TileStyleFP(t)
 end
 
 -- EFFECTS: per-filter blocks (fxList). Each entry: a filters set + optional
--- Icon Glow (glowType/glowClassColor/glowR/G/B), Border override (borderSize/
+-- Icon Glow (glow* prefix keys, EllesmereUI.Glows.PrefixKeys), Border override (borderSize/
 -- borderColor), and Size for matched categories (0/nil = base grid size).
 -- ACTIVE = filters checked and at least one payload; FIRST matching block
 -- wins per button category. Declared ABOVE the config fingerprint (its caller).
@@ -463,6 +463,9 @@ local function FxListFP(list)
             table.concat(keys, "+"),
             tostring(e.glowType or 0), e.glowClassColor and "cc" or "-",
             string.format("%.2f,%.2f,%.2f", e.glowR or 1, e.glowG or 0.776, e.glowB or 0.376),
+            tostring(e.glowColorMode), tostring(e.glowLines), tostring(e.glowThickness),
+            tostring(e.glowSpeed), tostring(e.glowBackground),
+            string.format("%.2f,%.2f,%.2f", e.glowBackgroundR or 0, e.glowBackgroundG or 0, e.glowBackgroundB or 0),
             tostring(e.borderSize or 0),
             string.format("%.2f,%.2f,%.2f", bc.r or 0, bc.g or 0, bc.b or 0),
             tostring(e.size or 0),
@@ -940,6 +943,8 @@ function ns.DM_CfgFP()
                     t.color.r or 1, t.color.g or 1, t.color.b or 1, t.color.a or 1) or "-",
                 tostring(t.glowType), tostring(t.glowLines), tostring(t.glowThickness),
                 tostring(t.glowSpeed), tostring(t.glowColorMode), tostring(t.opacity),
+                tostring(t.glowBackground), t.glowBackgroundColor and string.format("%.2f,%.2f,%.2f",
+                    t.glowBackgroundColor.r or 0, t.glowBackgroundColor.g or 0, t.glowBackgroundColor.b or 0) or "-",
                 tostring(t.orientation), tostring(t.reverseFill),
                 tostring(t.barFullWidth), tostring(t.barFullHeight),
                 tostring(t.barColorOpacity), tostring(t.barBgOpacity),
@@ -1891,6 +1896,10 @@ local function FxCreateVisuals(button, dd, kind, hostBtn, health)
         g:EnableMouse(false)
         g:Hide()
         dd.dmFxGlow = g
+        -- Every region a later style/background change can need, created here in the window.
+        if EllesmereUI.Glows and EllesmereUI.Glows.PrewarmEngineHost then
+            EllesmereUI.Glows.PrewarmEngineHost(g, 24, 24)
+        end
     elseif kind == "healthcolor" then
         -- BM healthcolor parity via an owned wrapper: level-tied WITH (not above) the health frame so the tint
         -- sorts against health's ARTWORK sublevels (above fill=0, below heal absorb/prediction=+1, shields=+3);
@@ -1933,33 +1942,28 @@ local function FxCreateVisuals(button, dd, kind, hostBtn, health)
     end
 end
 
+local FX_GLOW_SPEC = {}
 local function FxApplyInner(button, dd, refs, fx)
     if fx.kind == "glow" then
         local Glows = EllesmereUI.Glows
         local host = dd.dmFxGlow
         if not (Glows and host) then return end -- created in extraInit
         host:Show()
-        -- Color mode: default = proc gold, class = player class, custom = fx.r/g/b.
-        local cr, cg, cb = fx.r or 1, fx.g or 0.78, fx.b or 0.38
-        local mode = fx.glowMode or "default"
-        if mode == "class" then
-            local _, classFile = UnitClass("player")
-            local ccc = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
-            if ccc then cr, cg, cb = ccc.r, ccc.g, ccc.b end
-        elseif mode == "default" then
-            cr, cg, cb = 1.0, 0.788, 0.137
-        end
+        -- Tile color mode: nil has always meant default here (proc gold).
+        local spec = FX_GLOW_SPEC
+        spec.style = fx.glowType or 1
+        spec.excludes = Glows.RECT_EXCLUDES
+        spec.r, spec.g, spec.b = Glows.ResolveColor(fx.glowMode or "default", fx.r, fx.g, fx.b, 1, 0.78, 0.38)
+        spec.lines, spec.thickness, spec.speed = fx.glowLines, fx.glowThickness, fx.glowSpeed
+        spec.bg, spec.bgR, spec.bgG, spec.bgB = fx.glowBg, fx.glowBgR, fx.glowBgG, fx.glowBgB
         -- Size from the unit frame's REAL rect (refs.host is ours, outside the forbidden subtree, so the read is legal here).
         local rect = (refs.health and refs.health._euiKitRef) or refs.host
         local gw = rect:GetWidth() or 0
         local gh = rect:GetHeight() or 0
         if gw < 1 then gw = 24 end
         if gh < 1 then gh = gw end
-        -- One style only: the animation-driven pixel march (driver-ticked glows freeze on the forbidden slot subtree; this runs C-side).
-        if Glows.StartAnimatedAnts then
-            Glows.StartAnimatedAnts(host, fx.glowLines or 8, fx.glowThickness or 2,
-                fx.glowSpeed or 4, cr, cg, cb, gw, gh)
-        end
+        -- Engine host: C-side styles only (driver-ticked glows freeze on the forbidden slot subtree).
+        Glows.StartSpecGlow(host, spec, gw, gh, "engine")
 
     elseif fx.kind == "healthcolor" then
         local f = dd.dmFxHcFrame
@@ -2192,6 +2196,8 @@ local function EnsureTileStyle(d, s, t, szOv, szCat)
         end
         v = table.concat({ tostring(t.type), tostring(t.glowType), tostring(t.glowLines),
             tostring(t.glowThickness), tostring(t.glowSpeed), tostring(t.glowColorMode),
+            tostring(t.glowBackground), t.glowBackgroundColor and string.format("%.2f,%.2f,%.2f",
+                t.glowBackgroundColor.r or 0, t.glowBackgroundColor.g or 0, t.glowBackgroundColor.b or 0) or "-",
             tostring(t.opacity), tostring(t.size),
             tostring(t.width), tostring(t.height), tostring(t.position),
             tostring(t.offsetX), tostring(t.offsetY),
@@ -2217,6 +2223,10 @@ local function EnsureTileStyle(d, s, t, szOv, szCat)
                     glowType = t.glowType or 1, glowLines = t.glowLines,
                     glowThickness = t.glowThickness, glowSpeed = t.glowSpeed,
                     glowMode = t.glowColorMode,
+                    glowBg = t.glowBackground == true or nil,
+                    glowBgR = t.glowBackgroundColor and t.glowBackgroundColor.r,
+                    glowBgG = t.glowBackgroundColor and t.glowBackgroundColor.g,
+                    glowBgB = t.glowBackgroundColor and t.glowBackgroundColor.b,
                     size = t.size,
                     w = t.width or 10, h = t.height or 10,
                     corner = CORNERS[t.position or "center"] or "CENTER",

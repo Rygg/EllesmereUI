@@ -321,23 +321,19 @@ local function PabSnap(x)
     return math.floor(x / m + 0.5 + 0.001) * m
 end
 
+local PAB_GLOW_SPEC = {}
 local function PAB_ApplyDmFx(button, d, style)
     local cat = d.dmCat
     local e = style.fxList and PAB_FxBlockFor(style.fxList, cat) or nil
 
     local Glows = EllesmereUI.Glows
     local PP = EllesmereUI.PP
-    local gType = (e and e.glowType) or 0
-    -- ALWAYS remap driver-ticked styles (Pixel/Action Button/Auto-Cast/Shape) to their
-    -- FlipBook-safe equivalent. Must NOT gate on AK.AurasRestricted(): that reflects only
-    -- whether AURA DATA is secret, while a Lua OnUpdate touching a frame parented to a
-    -- 12.1 engine aura button is forbidden UNCONDITIONALLY ("Attempt to access forbidden
-    -- object from code tainted by an AddOn" on wrapper:IsVisible() inside
-    -- EllesmereUI_Glows.lua's driver). Only FlipBook styles (GCD/Modern/Classic) are
-    -- safe: C-side AnimationGroups, never in the driver's IsVisible() polling loop.
-    if gType > 0 and Glows and Glows.RestrictionSafeStyle then
-        gType = Glows.RestrictionSafeStyle(gType)
-    end
+    -- Engine host: a Lua OnUpdate touching a frame parented to a 12.1 engine aura
+    -- button is forbidden unconditionally, so only C-side animations render here
+    -- (StartSpecGlow's engine path: Pixel as animated ants, ABG as its FlipBook twin).
+    local spec = e and Glows and Glows.SpecFromPrefix
+        and Glows.SpecFromPrefix(PAB_GLOW_SPEC, e, "glow", 1.0, 0.776, 0.376)
+    local sz = style.width or 18
 
     -- Icon Glow overlay: created UNCONDITIONALLY, matching block or not. The first call
     -- lands in the button's one legal creation window (extraInit, see AddGroupToContainer
@@ -357,22 +353,13 @@ local function PAB_ApplyDmFx(button, d, style)
         gov:EnableMouse(false)
         gov:Hide()
         d.pabFxGlow = gov
+        if Glows and Glows.PrewarmEngineHost then
+            Glows.PrewarmEngineHost(gov, sz, style.height or sz)
+        end
     end
-    if gType > 0 and Glows and Glows.StartGlow then
+    if spec then
         gov:Show()
-        local cr, cg, cb = e.glowR or 1.0, e.glowG or 0.776, e.glowB or 0.376
-        if e.glowClassColor then
-            local _, classFile = UnitClass("player")
-            local cc = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
-            if cc then cr, cg, cb = cc.r, cc.g, cc.b end
-        end
-        local sz = style.width or 18
-        if (not gov._euiGlowActive) or gov._fxStyle ~= gType or gov._fxW ~= sz
-           or gov._fxCR ~= cr or gov._fxCG ~= cg or gov._fxCB ~= cb then
-            Glows.StartGlow(gov, gType, sz, cr, cg, cb)
-            gov._fxStyle, gov._fxW = gType, sz
-            gov._fxCR, gov._fxCG, gov._fxCB = cr, cg, cb
-        end
+        Glows.StartSpecGlow(gov, spec, sz, style.height or sz, "engine")
     else
         if gov._euiGlowActive and Glows and Glows.StopGlow then Glows.StopGlow(gov) end
         gov:Hide()
@@ -5570,17 +5557,18 @@ local function BuildPreviewSlots(isBuff, cfg, list, listLen, count)
 end
 
 -- Icon Effects Per-Filter preview: applies a matched fx block's Glow/Border to a
--- fake preview icon. These are plain addon-owned frames (CreatePreviewIcon), never
--- secure engine buttons, so no creation-window/taint restriction applies: glow/border
--- hosts are created lazily and Glows.StartGlow is called directly, with no
--- RestrictionSafeStyle gate (real aura buttons only). `e` is nil when no active fx
--- block matches this icon's category (or for buff/placeholder slots), clearing any fx
+-- fake preview icon. Plain addon-owned frames (CreatePreviewIcon), so hosts are
+-- created lazily; the glow renders on the engine path anyway so the preview shows
+-- exactly what the live aura buttons can. `e` is nil when no active fx block
+-- matches this icon's category (or for buff/placeholder slots), clearing any fx
 -- left over from a previous render of this reused frame.
+local PAB_PREVIEW_GLOW_SPEC = {}
 local function ApplyPreviewFx(btn, e)
     local Glows = EllesmereUI.Glows
-    local gType = (e and e.glowType) or 0
+    local spec = e and Glows and Glows.SpecFromPrefix
+        and Glows.SpecFromPrefix(PAB_PREVIEW_GLOW_SPEC, e, "glow", 1.0, 0.776, 0.376)
     local gov = btn.fxGlow
-    if gType > 0 and Glows and Glows.StartGlow then
+    if spec then
         if not gov then
             gov = CreateFrame("Frame", nil, btn)
             gov:SetAllPoints(btn)
@@ -5589,19 +5577,8 @@ local function ApplyPreviewFx(btn, e)
             btn.fxGlow = gov
         end
         gov:Show()
-        local cr, cg, cb = e.glowR or 1.0, e.glowG or 0.776, e.glowB or 0.376
-        if e.glowClassColor then
-            local _, classFile = UnitClass("player")
-            local cc = classFile and RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
-            if cc then cr, cg, cb = cc.r, cc.g, cc.b end
-        end
         local sz = btn:GetWidth() or 18
-        if (not gov._euiGlowActive) or gov._fxStyle ~= gType or gov._fxW ~= sz
-           or gov._fxCR ~= cr or gov._fxCG ~= cg or gov._fxCB ~= cb then
-            Glows.StartGlow(gov, gType, sz, cr, cg, cb)
-            gov._fxStyle, gov._fxW = gType, sz
-            gov._fxCR, gov._fxCG, gov._fxCB = cr, cg, cb
-        end
+        Glows.StartSpecGlow(gov, spec, sz, btn:GetHeight() or sz, "engine", Glows.PANEL_EXTRA)
     elseif gov then
         if gov._euiGlowActive and Glows and Glows.StopGlow then Glows.StopGlow(gov) end
         gov:Hide()

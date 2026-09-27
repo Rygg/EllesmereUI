@@ -616,7 +616,7 @@ end
 -- spellsteal (the live frame's own gate). The host is our own frame.
 function ns.UFOpt_PreviewPurgeGlow(bf, unitKey, s, w, h)
     local Glows = EllesmereUI.Glows
-    if not (Glows and Glows.StartEngineGlow) then return end
+    if not (Glows and Glows.StartSpecGlow and ns.UF_PurgeGlowSpec) then return end
     local g = (unitKey == "target" or unitKey == "focus") and s and s.buffPurgeGlow
     local on = type(g) == "number" and g > 0
     if on then
@@ -629,8 +629,6 @@ function ns.UFOpt_PreviewPurgeGlow(bf, unitKey, s, w, h)
     if not on then
         if host then
             if host._euiGlowActive then Glows.StopGlow(host) end
-            if Glows.HideStealableBorder then Glows.HideStealableBorder(host) end
-            host._pgS = nil
             host:Hide()
         end
         return
@@ -642,23 +640,8 @@ function ns.UFOpt_PreviewPurgeGlow(bf, unitKey, s, w, h)
         bf._purgeGlow = host
     end
     host:Show()
-    local c = s.buffPurgeGlowColor
-    local cr, cg, cb = c and c.r, c and c.g, c and c.b
-    -- Blizzard Border: the static stealable art, as on the live frame.
-    if g == Glows.STEALABLE_BORDER then
-        if host._euiGlowActive then Glows.StopGlow(host) end
-        host:SetAlpha(1)
-        Glows.ShowStealableBorder(host, w, h, cr, cg, cb)
-        host._pgS = g
-        return
-    end
-    if Glows.HideStealableBorder then Glows.HideStealableBorder(host) end
-    if (not host._euiGlowActive) or host._pgS ~= g or host._pgW ~= w or host._pgH ~= h
-       or host._pgR ~= cr or host._pgG ~= cg or host._pgB ~= cb then
-        Glows.StartEngineGlow(host, g, w, cr, cg, cb, nil, h)
-        host._pgS, host._pgW, host._pgH = g, w, h
-        host._pgR, host._pgG, host._pgB = cr, cg, cb
-    end
+    -- The live renderer's own spec, so the preview is the live look.
+    Glows.StartSpecGlow(host, ns.UF_PurgeGlowSpec(s), w, h, "engine", Glows.PANEL_EXTRA)
 end
 
 -- Target/focus/boss Debuff Filter: ONE single-select mode, an engine VIEW over
@@ -908,6 +891,92 @@ initFrame:SetScript("OnEvent", function(self)
         pet          = function() return db.profile.pet end,
         boss         = function() return db.profile.boss end,
     }
+
+    ---------------------------------------------------------------------------
+    --  Glow site: the target/focus Purgeable Buff Glow as a shared glow
+    --  descriptor over one unit's settings (getS), used by the Buffs cog and the
+    --  Global Settings Glows page. Engine aura buttons: C-side styles only; an
+    --  unset color is the suite default (gold).
+    ---------------------------------------------------------------------------
+    local function UF_PurgeGlowDesc(getS)
+        -- Blizzard Border: Blizzard's static stealable art, outside the style list.
+        local border = EllesmereUI.Glows and EllesmereUI.Glows.STEALABLE_BORDER
+        return {
+            host = "engine",
+            extras = border and { { value = border, label = "Blizzard Border", style = border } } or nil,
+            caps = { mode = true, params = true, bg = true },
+            defaultColor = EllesmereUI.Glows and EllesmereUI.Glows.DEFAULT_COLOR,
+            onChange = ReloadAndUpdate,
+            get = function(f)
+                local s = getS()
+                if f == "style" then return s.buffPurgeGlow or 0
+                elseif f == "mode" then
+                    return s.buffPurgeGlowColorMode or (s.buffPurgeGlowColor and "custom" or "default")
+                end
+                return EllesmereUI.GlowOptions.FlatGet(s, "buffPurgeGlow", f)
+            end,
+            set = function(f, a, b, c)
+                local s = getS()
+                if f == "style" then s.buffPurgeGlow = (a ~= 0) and a or nil
+                elseif f == "mode" then s.buffPurgeGlowColorMode = a
+                else EllesmereUI.GlowOptions.FlatSet(s, "buffPurgeGlow", f, a, b, c)
+                end
+            end,
+        }
+    end
+    -- Target/focus Important Cast Glow: a bar host storing shared style
+    -- indices, rectangle styles only; an unset mode is the stored custom color.
+    local function UF_ImpCastGlowDesc(getS, onChange)
+        return {
+            host = "bar", excludes = EllesmereUI.Glows and EllesmereUI.Glows.RECT_EXCLUDES,
+            caps = { mode = true, params = true, bg = true },
+            defaultColor = { r = 1, g = 0.2, b = 0.2 },
+            onChange = onChange or ReloadAndUpdate,
+            isOff = function() return getS().castbarImportantGlow ~= true end,
+            get = function(f)
+                local s = getS()
+                if f == "style" then return s.castbarImportantGlowStyle or 1
+                elseif f == "mode" then return s.castbarImportantGlowColorMode or "custom"
+                end
+                return EllesmereUI.GlowOptions.FlatGet(s, "castbarImportantGlow", f)
+            end,
+            set = function(f, a, b, c)
+                local s = getS()
+                if f == "style" then
+                    if a == 0 then s.castbarImportantGlow = false
+                    else s.castbarImportantGlow = true; s.castbarImportantGlowStyle = a end
+                elseif f == "mode" then s.castbarImportantGlowColorMode = a
+                else EllesmereUI.GlowOptions.FlatSet(s, "castbarImportantGlow", f, a, b, c)
+                end
+            end,
+        }
+    end
+    if EllesmereUI.GlowOptions then
+        local GO = EllesmereUI.GlowOptions
+        -- Open Settings selects the unit first (the page shows one unit at a time).
+        local function SelectUnit(unit)
+            return function() EllesmereUI._setUnitFrameUnit(unit); EllesmereUI._pendingUnitSelect = unit end
+        end
+        GO.RegisterSite({ id = "uf_purge_target", label = "Target Purgeable Buff Glow", group = "module",
+            module = "EllesmereUIUnitFrames", page = PAGE_DISPLAY, section = "BUFFS AND DEBUFFS",
+            preSelect = SelectUnit("target"),
+            -- The Purgeable Buffs cog sits on the unit's Buff Filter row.
+            highlight = "Buff Filter",
+            desc = UF_PurgeGlowDesc(UNIT_DB_MAP.target) })
+        GO.RegisterSite({ id = "uf_purge_focus", label = "Focus Purgeable Buff Glow", group = "module",
+            module = "EllesmereUIUnitFrames", page = PAGE_DISPLAY, section = "BUFFS AND DEBUFFS",
+            preSelect = SelectUnit("focus"),
+            highlight = "Buff Filter",
+            desc = UF_PurgeGlowDesc(UNIT_DB_MAP.focus) })
+        GO.RegisterSite({ id = "uf_importantcast_target", label = "Target Important Cast Glow", group = "module",
+            module = "EllesmereUIUnitFrames", page = PAGE_DISPLAY, section = "CAST BAR",
+            preSelect = SelectUnit("target"), highlight = "Important Cast Glow",
+            desc = UF_ImpCastGlowDesc(UNIT_DB_MAP.target) })
+        GO.RegisterSite({ id = "uf_importantcast_focus", label = "Focus Important Cast Glow", group = "module",
+            module = "EllesmereUIUnitFrames", page = PAGE_DISPLAY, section = "CAST BAR",
+            preSelect = SelectUnit("focus"), highlight = "Important Cast Glow",
+            desc = UF_ImpCastGlowDesc(UNIT_DB_MAP.focus) })
+    end
 
     local GROUP_UNIT_ORDER = { "player", "target", "focus" }
     local SHORT_LABELS = {
@@ -7484,8 +7553,9 @@ initFrame:SetScript("OnEvent", function(self)
                           ["pixels-textured"]        = "Pixels Textured Ring",
                           ["pixels-shadow"]          = "Pixels Ring Shadow",
                           ["pixels-textured-shadow"] = "Pixels Textured Ring Shadow",
+                          ["thin-border"]            = "Naowh Thin Circle",
                       },
-                      order={ "none", "border", "pixels", "pixels-textured", "pixels-shadow", "pixels-textured-shadow" },
+                      order={ "none", "border", "pixels", "pixels-textured", "pixels-shadow", "pixels-textured-shadow", "thin-border" },
                       -- "Pixels Textured Ring Shadow" needs more than the 130px default.
                       ddWidth=190,
                       tooltip="Adds a second ring around a round portrait; Match Frame Border follows your frame border style.",
@@ -10849,36 +10919,12 @@ initFrame:SetScript("OnEvent", function(self)
                   db = function(u) local f = UNIT_DB_MAP[u]; return f and f() end })
         end
         -- Important Cast Glow (target/focus); in Classic WoW UI it fills the Border Size row's free slot.
-        local impGlowCfg, impGlowOff
-        if selectedUnit == "target" or selectedUnit == "focus" then
-            impGlowOff = function() return not SValSupported("castbarImportantGlow", false) end
-            local impGlowValues, impGlowOrder = { [0] = "None" }, { 0 }
-            do
-                local styles = EllesmereUI.Glows and EllesmereUI.Glows.STYLES
-                for _, idx in ipairs(ns.UF_IMPORTANT_GLOW_STYLES) do
-                    local entry = styles and styles[idx]
-                    impGlowValues[idx] = entry and entry.name or ("Style " .. idx)
-                    impGlowOrder[#impGlowOrder + 1] = idx
-                end
-            end
-            impGlowCfg = { type="dropdown", text="Important Cast Glow",
-                values=impGlowValues, order=impGlowOrder,
-                getValue=function()
-                  if impGlowOff() then return 0 end
-                  local v = SValSupported("castbarImportantGlowStyle", 1)
-                  return impGlowValues[v] and v or 1
-                end,
-                setValue=function(v)
-                  local s = UNIT_DB_MAP[selectedUnit]()
-                  if v == 0 then
-                      s.castbarImportantGlow = false
-                  else
-                      s.castbarImportantGlow = true
-                      s.castbarImportantGlowStyle = v
-                  end
-                  ReloadAndUpdate(); UpdatePreview(); EllesmereUI:RefreshPage()
-                end,
-                tooltip="Show a glow on the cast bar when the unit is casting a spell Blizzard marks as important." }
+        local impGlowCfg, impGlowDesc
+        if (selectedUnit == "target" or selectedUnit == "focus") and EllesmereUI.GlowOptions then
+            impGlowDesc = UF_ImpCastGlowDesc(function() return UNIT_DB_MAP[selectedUnit]() end,
+                function() ReloadAndUpdate(); UpdatePreview() end)
+            impGlowCfg = EllesmereUI.GlowOptions.DropdownSpec(impGlowDesc, "Important Cast Glow",
+                "Show a glow on the cast bar when the unit is casting a spell Blizzard marks as important.")
         end
         -- Classic WoW UI: Border Size closes the section (odd last slot).
         local classicH, classicRow = ns.UF_ClassicCastBorderRow(W, parent, y,
@@ -10894,75 +10940,26 @@ initFrame:SetScript("OnEvent", function(self)
         if impGlowCfg then
             local impGlowRow, impGlowSide = classicRow, "_rightRegion"
             if not impGlowRow then
-                impGlowRow, h = W:DualRow(parent, y, impGlowCfg, EllesmereUI.BlankRowCfg());  y = y - h
+                impGlowRow, h = W:DualRow(parent, y, impGlowCfg, { type="label", text="Glow Color" });  y = y - h
                 impGlowSide = "_leftRegion"
             end
             if not EllesmereUI._prebuilding then
                 local rgn = impGlowRow[impGlowSide]
-                -- Inline color swatch
-                local sw, updateSw = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel() + 5,
-                    function()
-                        local c = SValSupported("castbarImportantGlowColor", { r = 1, g = 0.2, b = 0.2 })
-                        return c.r, c.g, c.b, 1
-                    end,
-                    function(r, g, b)
-                        SSetSupported("castbarImportantGlowColor", { r = r, g = g, b = b })
-                    end, false, 20)
-                PP.Point(sw, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -12, 0)
-                rgn._lastInline = sw
-                local swBlock = CreateFrame("Frame", nil, sw)
-                swBlock:SetAllPoints()
-                swBlock:SetFrameLevel(sw:GetFrameLevel() + 10)
-                swBlock:EnableMouse(true)
-                swBlock:SetScript("OnEnter", function()
-                    EllesmereUI.ShowWidgetTooltip(sw, EllesmereUI.DisabledTooltip("Important Cast Glow"))
-                end)
-                swBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                local function applySwState()
-                    local off = impGlowOff()
-                    sw:SetAlpha(off and 0.3 or 1)
-                    if off then swBlock:Show() else swBlock:Hide() end
-                    if updateSw then updateSw() end
+                -- Color swatches (in the free right half when there is one), the
+                -- Pixel Glow cog and a small preview.
+                local GO = EllesmereUI.GlowOptions
+                GO.AttachInline(rgn, impGlowDesc,
+                    impGlowSide == "_leftRegion" and impGlowRow._rightRegion or nil)
+                local pv = GO.BuildPreview(rgn, impGlowDesc, { width = 40, height = 14,
+                    anchor = rgn._lastInline or rgn._control, x = -12 })
+                if pv then
+                    pv:SetFrameLevel(rgn:GetFrameLevel() + 5)
+                    rgn._lastInline = pv
                 end
-                applySwState()
-                EllesmereUI.RegisterWidgetRefresh(applySwState)
-
-                -- Inline cog: Pixel Glow settings
-                EllesmereUI.BuildInlineCog(rgn, {
-                    gap = 6,
-                    tip = "Pixel Glow Settings",
-                    disabled = function()
-                        return impGlowOff() or SValSupported("castbarImportantGlowStyle", 1) ~= 1
-                    end,
-                    disabledTooltip = "This option requires Pixel Glow to be the selected glow type",
-                    title = "Pixel Glow Settings",
-                    rows = {
-                        { type = "slider", label = "Lines", min = 2, max = 16, step = 1,
-                          get = function() return SValSupported("castbarImportantGlowLines", 8) end,
-                          set = function(v) SSetSupported("castbarImportantGlowLines", v) end },
-                        { type = "slider", label = "Thickness", min = 1, max = 4, step = 1,
-                          get = function() return SValSupported("castbarImportantGlowThickness", 2) end,
-                          set = function(v) SSetSupported("castbarImportantGlowThickness", v) end },
-                        -- Stored as the animation period (lower = faster); shown inverted so right = faster.
-                        { type = "slider", label = "Speed", min = 1, max = 8, step = 1,
-                          get = function() return 9 - SValSupported("castbarImportantGlowSpeed", 4) end,
-                          set = function(v) SSetSupported("castbarImportantGlowSpeed", 9 - v) end },
-                        { type = "toggle", label = "Background",
-                          get = function() return SValSupported("castbarImportantGlowBackground", false) == true end,
-                          set = function(v) SSetSupported("castbarImportantGlowBackground", v and true or nil) end },
-                        { type = "colorpicker", label = "Background Color",
-                          get = function()
-                              local c = SValSupported("castbarImportantGlowBackgroundColor", { r = 0, g = 0, b = 0 })
-                              return c.r or 0, c.g or 0, c.b or 0
-                          end,
-                          set = function(r, g, b) SSetSupported("castbarImportantGlowBackgroundColor", { r = r, g = g, b = b }) end,
-                          disabled = function() return SValSupported("castbarImportantGlowBackground", false) ~= true end,
-                          disabledTooltip = "Pixel Glow Background" },
-                    },
-                })
 
                 -- Sync icon: apply glow settings to the other kick unit (target <-> focus)
                 local GLOW_KEYS = { "castbarImportantGlow", "castbarImportantGlowStyle",
+                    "castbarImportantGlowColorMode",
                     "castbarImportantGlowLines", "castbarImportantGlowThickness",
                     "castbarImportantGlowSpeed", "castbarImportantGlowBackground" }
                 local GLOW_COLOR_KEYS = { "castbarImportantGlowColor", "castbarImportantGlowBackgroundColor" }
@@ -13083,59 +13080,20 @@ initFrame:SetScript("OnEvent", function(self)
                 -- Purgeable Buff Glow (target/focus): inline cog beside the Buff
                 -- Filter. The glow styles whichever purgeable buffs the filter
                 -- shows; the engine gates it on the character's offensive dispel.
-                if selectedUnit == "target" or selectedUnit == "focus" then
-                    local glowValues, glowOrder = { [0] = "None" }, { 0 }
-                    local GS = EllesmereUI.Glows and EllesmereUI.Glows.STYLES or {}
-                    for i, entry in ipairs(GS) do
-                        -- Engine aura buttons take C-side glows only; Auto-Cast
-                        -- Shine and Shape Glow have no equivalent there.
-                        if not (entry.autocast or entry.shapeGlow) then
-                            glowValues[i] = entry.name
-                            glowOrder[#glowOrder + 1] = i
-                        end
-                    end
-                    -- Blizzard's static stealable border art (outside the STYLES list).
-                    local BLIZZ = EllesmereUI.Glows and EllesmereUI.Glows.STEALABLE_BORDER
-                    if BLIZZ then
-                        glowValues[BLIZZ] = "Blizzard Border"
-                        glowOrder[#glowOrder + 1] = BLIZZ
-                    end
-                    local function GlowOff()
-                        local g = SDB().buffPurgeGlow
-                        return not (type(g) == "number" and g > 0)
-                    end
+                if (selectedUnit == "target" or selectedUnit == "focus") and EllesmereUI.GlowOptions then
+                    -- Shared glow controls over the unit's own keys. Engine aura
+                    -- buttons: C-side styles only. Unset color = the suite default (gold).
+                    local GO = EllesmereUI.GlowOptions
+                    local pgDesc = UF_PurgeGlowDesc(SDB)
+                    local pgRows = GO.PopupRows(pgDesc, "Glow Style")
+                    pgRows[1].tooltip = "Glows the buffs you can purge or spellsteal. Glowing buffs lead the row and have their own Max Buffs count."
                     EllesmereUI.BuildInlineCog(rgn, {
                         title = "Purgeable Buffs",
                         tip = "Glow the buffs you can purge or spellsteal",
                         -- Greys out with the Buff Display (None = no buffs to glow).
                         disabled = BuffDisabled,
                         disabledTooltip = "Buffs",
-                        rows = {
-                            { type="dropdown", label="Glow Style", values=glowValues, order=glowOrder,
-                              -- Full glow names ("Action Button Glow") need more than the 130px default.
-                              ddWidth=170,
-                              tooltip="Glows the buffs you can purge or spellsteal. Glowing buffs lead the row and have their own Max Buffs count.",
-                              get=function()
-                                  local g = SDB().buffPurgeGlow
-                                  if type(g) == "number" and glowValues[g] then return g end
-                                  return 0
-                              end,
-                              set=function(v)
-                                  if v == 0 then SDB().buffPurgeGlow = nil else SDB().buffPurgeGlow = v end
-                                  ReloadAndUpdate(); UpdatePreview()
-                              end },
-                            { type="colorpicker", label="Glow Color",
-                              get=function()
-                                  local c = SDB().buffPurgeGlowColor
-                                  if c then return c.r, c.g, c.b end
-                                  return 1, 1, 1
-                              end,
-                              set=function(r, g, b)
-                                  SDB().buffPurgeGlowColor = { r = r, g = g, b = b }
-                                  ReloadAndUpdate(); UpdatePreview()
-                              end,
-                              disabled=GlowOff, disabledTooltip="a Glow Style" },
-                        },
+                        rows = pgRows,
                     })
                 end
             end

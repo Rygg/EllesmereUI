@@ -10539,8 +10539,15 @@ local function CreateMainFrame()
         local base = isSmoothing and scrollTarget or self:GetVerticalScroll()
         SmoothScrollTo(base - delta * SCROLL_STEP)
     end)
-    scrollFrame:SetScript("OnScrollRangeChanged", function()
+    scrollFrame:SetScript("OnScrollRangeChanged", function(self)
         if suppressScrollRangeChanged then return end
+        -- An offset past the new range would strand the view: the thumb hides
+        -- and the wheel ignores a zero range, so pull it back in.
+        local maxScroll = EllesmereUI.SafeScrollRange(self)
+        if (tonumber(self:GetVerticalScroll()) or 0) > maxScroll then
+            self:SetVerticalScroll(maxScroll)
+            if scrollTarget > maxScroll then scrollTarget = maxScroll end
+        end
         UpdateScrollThumb()
     end)
 
@@ -12321,6 +12328,9 @@ function EllesmereUI:RefreshPage(force)
     isSmoothing = false
     if smoothFrame then smoothFrame:Hide() end
     if scrollFrame then
+        -- The range is stale right after the height change; recompute it so a
+        -- shrunken page (card collapsed) clamps instead of keeping the old offset.
+        scrollFrame:UpdateScrollChildRect()
         local maxScroll = EllesmereUI.SafeScrollRange(scrollFrame)
         local restored = math.min(savedScroll, maxScroll)
         scrollTarget = math.min(savedTarget, maxScroll)

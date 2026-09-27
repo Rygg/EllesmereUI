@@ -492,7 +492,6 @@ local defaults = {
         procGlowType = 1,
         procGlowColor = { r = 1, g = 0.776, b = 0.376 },
         procGlowUseClassColor = false,
-        procGlowScale = 1.0,
         procGlowEnabled = false,
         -- Assisted Highlight ring: extra pixels per side beyond the button
         -- footprint. 0 = Blizzard's size (art sits exactly on the button).
@@ -11401,18 +11400,9 @@ end
 --  textures/animations with user-selected glow styles.
 -------------------------------------------------------------------------------
 
--- Loop glow types: atlas-based Blizzard FlipBook styles + procedural engines
-local LOOP_GLOW_TYPES = {
-    { name = "Pixel Glow",           procedural = true },
-    { name = "Custom Proc Glow",     buttonGlow = true },
-    { name = "Auto-Cast Shine",      autocast = true },
-    { name = "Shape Glow",           shapeGlow = true },
-    { name = "GCD",                  atlas = "RotationHelper_Ants_Flipbook", texPadding = 1.6 },
-    { name = "Modern WoW Glow",      atlas = "UI-HUD-ActionBar-Proc-Loop-Flipbook", texPadding = 1.4 },
-    { name = "Classic WoW Glow",     texture = "Interface\\SpellActivationOverlay\\IconAlertAnts",
-      rows = 5, columns = 5, frames = 25, duration = 0.3, frameW = 48, frameH = 48, texPadding = 1.25 },
-}
-ns.LOOP_GLOW_TYPES = LOOP_GLOW_TYPES
+-- Loop glow types: the shared glow styles in their shared order (saved procGlowType
+-- values are shared indices).
+local LOOP_GLOW_TYPES = EllesmereUI.Glows.MakeView({ 1, 2, 3, 4, 5, 6, 7 }).list
 
 -- Proc start types: the initial burst animation
 local PROC_START_TYPES = {
@@ -11506,15 +11496,10 @@ local function UpdateFlipbook(btn)
         end
     end
 
-    local cr, cg, cb
-    if p.procGlowUseClassColor then
-        local _, class = UnitClass("player")
-        local cc = RAID_CLASS_COLORS[class]
-        if cc then cr, cg, cb = cc.r, cc.g, cc.b else cr, cg, cb = 1, 1, 1 end
-    else
-        local c = p.procGlowColor or { r = 1, g = 0.776, b = 0.376 }
-        cr, cg, cb = c.r, c.g, c.b
-    end
+    -- Color mode: legacy profiles carry only the class flag (class, else custom).
+    local c = p.procGlowColor or { r = 1, g = 0.776, b = 0.376 }
+    local cr, cg, cb = _G_Glows.ResolveColor(_G_Glows.DeriveColorMode(p.procGlowColorMode, p.procGlowUseClassColor),
+        c.r, c.g, c.b)
 
     local loopIdx = p.procGlowType or 1
     if loopIdx < 1 or loopIdx > #LOOP_GLOW_TYPES then loopIdx = 1 end
@@ -11525,6 +11510,12 @@ local function UpdateFlipbook(btn)
         end
     end
     local loopEntry = LOOP_GLOW_TYPES[loopIdx]
+    -- Default mode (nil color): the drawn engines use the suite gold; FlipBooks
+    -- keep the atlas's own untinted look.
+    if cr == nil and (loopEntry.procedural or loopEntry.buttonGlow or loopEntry.autocast or loopEntry.shapeGlow) then
+        local d = _G_Glows.DEFAULT_COLOR
+        cr, cg, cb = d.r, d.g, d.b
+    end
 
     if not fd.glowWrapper then
         local wrapper = CreateFrame("Frame", nil, btn:GetParent() or btn)
@@ -11559,13 +11550,17 @@ local function UpdateFlipbook(btn)
         local bW, bH = _ufBtnW, _ufBtnH
 
         if loopEntry.procedural then
-            local N = 8
-            local th = 2
-            local period = 4
+            local N = p.procGlowLines or 8
+            local th = p.procGlowThickness or 2
+            local period = p.procGlowSpeed or 4
             local lineLen = floor((bW + bH) * (2 / N - 0.1))
             lineLen = min(lineLen, min(bW, bH))
             if lineLen < 1 then lineLen = 1 end
-            _G_Glows.StartProceduralAnts(wrapper, N, th, period, lineLen, cr, cg, cb, bW, bH)
+            -- No fallback table per proc: an unset background color reads as black.
+            local bgOn, bgc = p.procGlowBackground, p.procGlowBackgroundColor
+            _G_Glows.StartProceduralAnts(wrapper, N, th, period, lineLen, cr, cg, cb, bW, bH,
+                bgOn and (bgc and bgc.r or 0) or nil, bgOn and (bgc and bgc.g or 0) or nil,
+                bgOn and (bgc and bgc.b or 0) or nil, bgOn and 1 or nil)
         elseif loopEntry.buttonGlow then
             _G_Glows.StartButtonGlow(wrapper, bW, cr, cg, cb, nil, bH)
         elseif loopEntry.autocast then

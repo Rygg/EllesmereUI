@@ -5436,15 +5436,73 @@ initFrame:SetScript("OnEvent", function(self)
     local interactionTypeOrder  = { 1, 2, 3, 4, 5, 6 }
     local pushedTypeValues, pushedTypeOrder = interactionTypeValues, interactionTypeOrder
     local highlightTypeValues, highlightTypeOrder = interactionTypeValues, interactionTypeOrder
-    local procGlowValues = { [0] = "None" }
-    local procGlowOrder = { 0 }
-    do
-        for i, entry in ipairs(ns.LOOP_GLOW_TYPES) do
-            if not entry.shapeGlow then          -- Shape Glow is internal-only
-                procGlowValues[i] = entry.name
-                procGlowOrder[#procGlowOrder + 1] = i
-            end
+    -- Custom Proc Glow: shared glow controls over the proc glow keys. Shape Glow
+    -- is internal-only (forced by custom button shapes at render time).
+    local function ProcP() return EAB.db.profile end
+    local _procGlowPreview
+    local UpdateProcGlowPreview
+    local GO = EllesmereUI.GlowOptions
+    -- Custom button shapes force Shape Glow at render time (none/cropped do not).
+    local function AnyBarHasCustomShape()
+        local bars = EAB.db.profile.bars
+        if not bars then return false end
+        for _, s in pairs(bars) do
+            if s.buttonShape and s.buttonShape ~= "none" and s.buttonShape ~= "cropped" then return true end
         end
+        return false
+    end
+    local procGlowDesc = GO and {
+        host = "icon", excludes = { [4] = true },
+        disabled = function() return EllesmereUI.BlizzStyle.Get("actionbars") or AnyBarHasCustomShape() end,
+        disabledTooltip = function()
+            if EllesmereUI.BlizzStyle.Get("actionbars") then return EllesmereUI.DisabledTooltip(EllesmereUI.BlizzStyle.Label("actionbars"), "disabled") end
+            return "Custom shapes always use Shape Glow -- change your bar shape to None or Cropped to pick a different glow"
+        end,
+        rawTooltip = true,
+        caps = { mode = true, params = true, bg = true },
+        defaultColor = { r = 1, g = 0.776, b = 0.376 },
+        isOff = function() local p = ProcP(); return p.procGlowEnabled == false or p.procGlowType == 0 end,
+        onChange = function() EAB:RefreshProcGlows(); UpdateProcGlowPreview(_procGlowPreview) end,
+        get = function(f)
+            local p = ProcP()
+            if f == "style" then return p.procGlowType or 1
+            elseif f == "mode" then return EllesmereUI.Glows.DeriveColorMode(p.procGlowColorMode, p.procGlowUseClassColor)
+            elseif f == "color" then local c = p.procGlowColor or { r = 1, g = 0.776, b = 0.376 }; return c.r, c.g, c.b
+            end
+            return EllesmereUI.GlowOptions.FlatGet(p, "procGlow", f)
+        end,
+        set = function(f, a, b2, c2)
+            local p = ProcP()
+            if f == "style" then p.procGlowType = a; p.procGlowEnabled = (a ~= 0)
+            elseif f == "mode" then
+                -- The class flag stays in step (Bar Interactions' unified class toggle writes it too).
+                p.procGlowColorMode = a
+                p.procGlowUseClassColor = (a == "class")
+            else EllesmereUI.GlowOptions.FlatSet(p, "procGlow", f, a, b2, c2)
+            end
+        end,
+        confirm = function(v, commit)
+            local p = ProcP()
+            if ((p.procGlowType == 0) or (p.procGlowEnabled == false)) and v ~= 0 then
+                EllesmereUI:ShowConfirmPopup({
+                    title       = "Custom Proc Glow Settings",
+                    message     = "Custom proc glow may cause a slight loss in performance efficiency. Do you want to enable it?",
+                    confirmText = "Enable",
+                    cancelText  = "Cancel",
+                    onConfirm   = commit,
+                    onCancel    = function() EllesmereUI:RefreshPage() end,
+                })
+                return
+            end
+            commit()
+        end,
+    }
+    if procGlowDesc then
+        GO.RegisterSite({ id = "ab_proc", label = "Custom Proc Glow", group = "module",
+            module = "EllesmereUIActionBars", page = PAGE_ANIMATIONS, section = "CUSTOM PROC GLOW",
+            highlight = "Custom Proc Glow", desc = procGlowDesc,
+            -- Blizzard Style bars draw Blizzard's own proc glow.
+            blocked = function() return EllesmereUI.BlizzStyle.Get("actionbars") end })
     end
 
     -----------------------------------------------------------------------
@@ -5586,108 +5644,32 @@ initFrame:SetScript("OnEvent", function(self)
         return 136197  -- fallback: generic spell icon
     end
 
-    local function UpdateProcGlowPreview(f)
+    UpdateProcGlowPreview = function(f)
         if not f then return end
-        local p = EAB.db.profile
-
-        -- Create or reuse FlipBook overlay for loop glow
-        if not f._loopTex then
-            local loopTex = f:CreateTexture(nil, "OVERLAY", nil, 7)
-            loopTex:SetPoint("CENTER")
-            local loopGroup = loopTex:CreateAnimationGroup()
-            loopGroup:SetLooping("REPEAT")
-            local loopAnim = loopGroup:CreateAnimation("FlipBook")
-            f._loopTex = loopTex
-            f._loopGroup = loopGroup
-            f._loopAnim = loopAnim
+        local G = EllesmereUI.Glows
+        -- The glow draws on its own child frame: on f itself it shares the
+        -- border's OVERLAY sublevel and a 1px Pixel Glow can vanish under it.
+        local ov = f._glowOv
+        if not ov then
+            ov = CreateFrame("Frame", nil, f)
+            ov:SetAllPoints(f)
+            ov:EnableMouse(false)
+            f._glowOv = ov
         end
-
-        f._loopGroup:Stop()
-        f._loopTex:Hide()
-        ns.Glows.StopProceduralAnts(f)
-        ns.Glows.StopButtonGlow(f)
-        ns.Glows.StopAutoCastShine(f)
-        ns.Glows.StopShapeGlow(f)
-
+        ov:SetFrameLevel(f:GetFrameLevel() + 2)
+        G.StopAllGlows(ov)
+        f:Show()
         -- If disabled (None selected), keep the icon visible but grayed out
-        if p.procGlowEnabled == false or (p.procGlowType == 0) then
-            f:Show()
+        if not (procGlowDesc and GO.IsCustomGlow(procGlowDesc)) then
             f:SetAlpha(0.15)
             return
         end
-        f:Show()
         f:SetAlpha(1)
-
-        local loopIdx = p.procGlowType or 1
-        local LOOP = ns.LOOP_GLOW_TYPES
-        if loopIdx < 1 or loopIdx > #LOOP then loopIdx = 1 end
-        local loopEntry = LOOP[loopIdx]
-
-        local iconSize = PREVIEW_ICON_SIZE
-        local cr, cg, cb
-        if p.procGlowUseClassColor then
-            local _, class = UnitClass("player")
-            local cc = RAID_CLASS_COLORS[class]
-            if cc then
-                cr, cg, cb = cc.r, cc.g, cc.b
-            else
-                cr, cg, cb = 1, 1, 1
-            end
-        else
-            local c = p.procGlowColor or { r = 1, g = 0.776, b = 0.376 }
-            cr, cg, cb = c.r, c.g, c.b
-        end
-
-        if loopEntry.procedural then
-            -- Pixel Glow preview
-            local N = 8
-            local th = 2
-            local period = 4
-            local lineLen = math.floor((iconSize + iconSize) * (2 / N - 0.1))
-            lineLen = math.min(lineLen, iconSize)
-            if lineLen < 1 then lineLen = 1 end
-            ns.Glows.StartProceduralAnts(f, N, th, period, lineLen, cr, cg, cb)
-        elseif loopEntry.buttonGlow then
-            ns.Glows.StartButtonGlow(f, iconSize, cr, cg, cb)
-        elseif loopEntry.autocast then
-            ns.Glows.StartAutoCastShine(f, iconSize, cr, cg, cb, 1.0)
-        elseif loopEntry.shapeGlow then
-            -- Shape Glow preview -- use first bar's shape mask
-            local maskPath
-            for k, bs in pairs(EAB.db.profile.bars) do
-                if bs then
-                    local shape = bs.buttonShape or "none"
-                    if ns.SHAPE_MASKS[shape] then maskPath = ns.SHAPE_MASKS[shape]; break end
-                end
-            end
-            ns.Glows.StartShapeGlow(f, iconSize, cr, cg, cb, 1.20, { maskPath = maskPath })
-        else
-            -- FlipBook preview
-            local previewSz = iconSize * (loopEntry.texPadding or 1)
-            f._loopTex:SetSize(previewSz, previewSz)
-            if loopEntry.atlas then
-                f._loopTex:SetAtlas(loopEntry.atlas)
-            elseif loopEntry.texture then
-                f._loopTex:SetTexture(loopEntry.texture)
-            end
-            f._loopAnim:SetFlipBookRows(loopEntry.rows or 6)
-            f._loopAnim:SetFlipBookColumns(loopEntry.columns or 5)
-            f._loopAnim:SetFlipBookFrames(loopEntry.frames or 30)
-            f._loopAnim:SetDuration(loopEntry.duration or 1.0)
-            f._loopAnim:SetFlipBookFrameWidth(loopEntry.frameW or 0.0)
-            f._loopAnim:SetFlipBookFrameHeight(loopEntry.frameH or 0.0)
-
-            -- Desaturate+tint targets custom texture styles; atlas styles keep white.
-            f._loopTex:SetDesaturated(true)
-            f._loopTex:SetVertexColor(cr, cg, cb)
-
-            f._loopTex:Show()
-            f._loopGroup:Play()
-        end
+        G.StartSpecGlow(ov, GO.Spec(procGlowDesc), PREVIEW_ICON_SIZE, PREVIEW_ICON_SIZE, "icon", G.PANEL_EXTRA)
     end
 
     -- Persistent preview icon frames (survive page cache restores)
-    local _pushedPreview, _highlightPreview, _procGlowPreview
+    local _pushedPreview, _highlightPreview
 
     local function BuildAnimationsPage(pageName, parent, yOffset)
         local W = EllesmereUI.Widgets
@@ -5724,6 +5706,8 @@ initFrame:SetScript("OnEvent", function(self)
             p.highlightCustomColor = { r = r, g = g, b = b, a = a }
             p.cooldownEdgeColor = { r = r, g = g, b = b, a = a }
             p.procGlowColor = { r = r, g = g, b = b }
+            -- A Default-mode proc glow would ignore the pick; it takes the unified color as before.
+            if p.procGlowColorMode == "default" then p.procGlowColorMode = "custom" end
             ApplyAllInteractionColors()
         end
 
@@ -5732,6 +5716,10 @@ initFrame:SetScript("OnEvent", function(self)
             p.highlightUseClassColor = v
             p.cooldownEdgeUseClassColor = v
             p.procGlowUseClassColor = v
+            -- A stored proc glow color mode would otherwise outrank the flag.
+            if p.procGlowColorMode == "class" or (v and p.procGlowColorMode) then
+                p.procGlowColorMode = v and "class" or "custom"
+            end
             ApplyAllInteractionColors()
             EllesmereUI:RefreshPage()
         end
@@ -5921,69 +5909,21 @@ initFrame:SetScript("OnEvent", function(self)
         -------------------------------------------------------------------
         _, h = W:SectionHeader(parent, SECTION_PROC_GLOW, y);  y = y - h
 
-        local function procGlowOff() return (p.procGlowType == 0) or (p.procGlowEnabled == false) end
-
-        local function AnyBarHasCustomShape()
-            local bars = EAB.db.profile.bars
-            if not bars then return false end
-            for _, s in pairs(bars) do
-                if s.buttonShape and s.buttonShape ~= "none" and s.buttonShape ~= "cropped" then return true end
-            end
-            return false
+        local procSpec = procGlowDesc and GO.DropdownSpec(procGlowDesc, "Custom Proc Glow")
+        local function AssistOff()
+            return not (GetCVarBool and GetCVarBool("assistedCombatHighlight"))
         end
-
-        local hasCustomShape = AnyBarHasCustomShape()
-
-        row, h = W:DualRow(parent, y,
-            { type="dropdown", text="Custom Proc Glow",
-              values=procGlowValues, order=procGlowOrder,
-              disabled=function() return EllesmereUI.BlizzStyle.Get("actionbars") or hasCustomShape end,
-              disabledTooltip=function()
-                  if EllesmereUI.BlizzStyle.Get("actionbars") then return EllesmereUI.DisabledTooltip(EllesmereUI.BlizzStyle.Label("actionbars"), "disabled") end
-                  return "Custom shapes always use Shape Glow -- change your bar shape to None or Cropped to pick a different glow"
-              end,
-              rawTooltip=true,
-              getValue=function() if p.procGlowEnabled == false then return 0 end; return p.procGlowType or 1 end,
-              setValue=function(v)
-                  local wasOff = (p.procGlowType == 0) or (p.procGlowEnabled == false)
-                  local turningOn = wasOff and v ~= 0
-                  if turningOn then
-                      EllesmereUI:ShowConfirmPopup({
-                          title       = "Custom Proc Glow Settings",
-                          message     = "Custom proc glow may cause a slight loss in performance efficiency. Do you want to enable it?",
-                          confirmText = "Enable",
-                          cancelText  = "Cancel",
-                          onConfirm   = function()
-                              p.procGlowType = v
-                              p.procGlowEnabled = true
-                              EAB:RefreshProcGlows()
-                              UpdateProcGlowPreview(_procGlowPreview)
-                              EllesmereUI:RefreshPage()
-                          end,
-                          onCancel    = function()
-                              EllesmereUI:RefreshPage()
-                          end,
-                      })
-                      return
-                  end
-                  p.procGlowType = v
-                  p.procGlowEnabled = (v ~= 0)
-                  EAB:RefreshProcGlows()
-                  UpdateProcGlowPreview(_procGlowPreview)
-                  C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
-              end },
-            { type="toggle", text="Use Class Color",
-              disabled=procGlowOff, disabledTooltip="This option requires a custom glow to be selected", rawTooltip=true,
-              getValue=function() return p.procGlowUseClassColor end,
-              setValue=function(v)
-                  p.procGlowUseClassColor = v
-                  EAB:RefreshProcGlows()
-                  UpdateProcGlowPreview(_procGlowPreview)
-                  EllesmereUI:RefreshPage()
-              end })
-        if not EllesmereUI._prebuilding then
+        -- Row 1: Custom Proc Glow | its color swatches.
+        row, h = W:DualRow(parent, y, procSpec or { type="label", text="" },
+            { type="label", text=procSpec and "Glow Color" or "" })
+        if procSpec and not EllesmereUI._prebuilding then
             local leftRgn = row._leftRegion
+            GO.AttachInline(leftRgn, procGlowDesc, row._rightRegion)
             _procGlowPreview = CreatePreviewIcon(leftRgn)
+            -- Joins the inline chain left of the glow cog.
+            _procGlowPreview:ClearAllPoints()
+            PP.Point(_procGlowPreview, "RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -12, 0)
+            leftRgn._lastInline = _procGlowPreview
             if _procGlowPreview._icon then
                 local iconTex = GetNthActionButtonIcon(3)
                 _procGlowPreview._icon:SetTexture(iconTex)
@@ -5991,42 +5931,6 @@ initFrame:SetScript("OnEvent", function(self)
             end
             UpdateProcGlowPreview(_procGlowPreview)
             EllesmereUI.RegisterWidgetRefresh(function() UpdateProcGlowPreview(_procGlowPreview) end)
-
-            local glowSwatchGet = function()
-                local c = p.procGlowColor or { r = 1, g = 0.776, b = 0.376 }
-                return c.r, c.g, c.b
-            end
-            local glowSwatchSet = function(r, g, b)
-                p.procGlowColor = { r = r, g = g, b = b }
-                EAB:RefreshProcGlows()
-                UpdateProcGlowPreview(_procGlowPreview)
-            end
-            local glowSwatch, glowUpdateSwatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5, glowSwatchGet, glowSwatchSet, nil, 20)
-            PP.Point(glowSwatch, "RIGHT", _procGlowPreview, "LEFT", -12, 0)
-
-            local GLOW_DISABLED_TIP = "This option requires a custom glow to be selected"
-
-            glowSwatch:HookScript("OnEnter", function(self)
-                if procGlowOff() then
-                    EllesmereUI.ShowWidgetTooltip(self, GLOW_DISABLED_TIP)
-                elseif p.procGlowUseClassColor then
-                    EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.DisabledTooltip("Class Colors", "disabled"))
-                end
-            end)
-            glowSwatch:HookScript("OnLeave", function()
-                EllesmereUI.HideWidgetTooltip()
-            end)
-
-            -- Gray out swatch when proc glow is off or class color is on
-            EllesmereUI.RegisterWidgetRefresh(function()
-                local off = procGlowOff() or p.procGlowUseClassColor
-                glowSwatch:SetAlpha(off and 0.15 or 1)
-                glowSwatch:SetMouseClickEnabled(not off)
-                glowUpdateSwatch()
-            end)
-            local initOff = procGlowOff() or p.procGlowUseClassColor
-            glowSwatch:SetAlpha(initOff and 0.15 or 1)
-            glowSwatch:SetMouseClickEnabled(not initOff)
         end
         y = y - h
 
@@ -6035,11 +5939,10 @@ initFrame:SetScript("OnEvent", function(self)
         -- ways to tell them apart: push the ring clear with an outset, or drop
         -- the ring for a flat tint that leaves the edge to the proc glow.
         -- Values mirror p.assistGlowStyle: 1 = ring, 2 = overlay, 3 = both.
-        local function AssistOff()
-            return not (GetCVarBool and GetCVarBool("assistedCombatHighlight"))
-        end
-        local assistRow
-        assistRow, h = W:DualRow(parent, y,
+        local function RingOff() return AssistOff() or (p.assistGlowStyle or 1) == 2 end
+        local function OverlayOff() return AssistOff() or (p.assistGlowStyle or 1) == 1 end
+        -- Row 2: Assisted Highlight | Assisted Highlight Outset
+        _, h = W:DualRow(parent, y,
             { type="dropdown", text="Assisted Highlight",
               values={ [1]="Glow Ring", [2]="Button Overlay", [3]="Ring + Overlay" },
               order={ 1, 2, 3 },
@@ -6055,20 +5958,44 @@ initFrame:SetScript("OnEvent", function(self)
                   -- rebuild tears the dropdown down inside its own click handler.
                   C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
               end },
+            { type="slider", text="Assisted Highlight Outset", min=-10, max=30, step=1,
+              tooltip="Moves the blue Assisted Highlight ring outward (or inward at negative values) so it no longer overlaps the proc glow on the same button. With Ring + Overlay the tint resizes along with it, so the two stay flush.",
+              disabled=RingOff,
+              disabledTooltip="This option requires a style that draws the glow ring",
+              rawTooltip=true,
+              getValue=function() return p.assistGlowOutset or 0 end,
+              setValue=function(v)
+                  p.assistGlowOutset = v
+                  if ns.UpdateAssistHighlights then ns.UpdateAssistHighlights() end
+              end });  y = y - h
+
+        -- Row 3: Overlay Opacity (+ overlay color) | Fit Ring to Cropped Buttons
+        local overlayRow
+        overlayRow, h = W:DualRow(parent, y,
             { type="slider", text="Overlay Opacity", min=0, max=100, step=1,
               tooltip="Opacity of the Button Overlay tint.",
-              disabled=function() return AssistOff() or (p.assistGlowStyle or 1) == 1 end,
+              disabled=OverlayOff,
               disabledTooltip="This option requires the Button Overlay style",
               rawTooltip=true,
               getValue=function() return p.assistGlowOverlayAlpha or 30 end,
               setValue=function(v)
                   p.assistGlowOverlayAlpha = v
                   if ns.UpdateAssistHighlights then ns.UpdateAssistHighlights() end
+              end },
+            { type="toggle", text="Fit Ring to Cropped Buttons",
+              tooltip="On Cropped bars, shapes the Assisted Highlight ring to the button instead of a square.",
+              disabled=RingOff,
+              disabledTooltip="This option requires a style that draws the glow ring",
+              rawTooltip=true,
+              getValue=function() return p.assistGlowFitCropped or false end,
+              setValue=function(v)
+                  p.assistGlowFitCropped = v
+                  ns.UpdateAssistHighlights()
               end });  y = y - h
 
         -- Inline swatch: overlay tint color, next to the opacity slider it belongs to.
         if not EllesmereUI._prebuilding then
-            EllesmereUI.BuildInlineSwatches(assistRow._rightRegion, {
+            EllesmereUI.BuildInlineSwatches(overlayRow._leftRegion, {
                 { tooltip = "Button Overlay Color", hasAlpha = false,
                   getValue = function()
                       local c = p.assistGlowOverlayColor or { r = 0.15, g = 0.5, b = 1 }
@@ -6079,32 +6006,10 @@ initFrame:SetScript("OnEvent", function(self)
                       if ns.UpdateAssistHighlights then ns.UpdateAssistHighlights() end
                   end },
             }, {
-                disabled = function() return AssistOff() or (p.assistGlowStyle or 1) == 1 end,
+                disabled = OverlayOff,
                 disabledTooltip = "This option requires the Button Overlay style",
             })
         end
-
-        _, h = W:DualRow(parent, y,
-            { type="slider", text="Assisted Highlight Outset", min=-10, max=30, step=1,
-              tooltip="Moves the blue Assisted Highlight ring outward (or inward at negative values) so it no longer overlaps the proc glow on the same button. With Ring + Overlay the tint resizes along with it, so the two stay flush.",
-              disabled=function() return AssistOff() or (p.assistGlowStyle or 1) == 2 end,
-              disabledTooltip="This option requires a style that draws the glow ring",
-              rawTooltip=true,
-              getValue=function() return p.assistGlowOutset or 0 end,
-              setValue=function(v)
-                  p.assistGlowOutset = v
-                  if ns.UpdateAssistHighlights then ns.UpdateAssistHighlights() end
-              end },
-            { type="toggle", text="Fit Ring to Cropped Buttons",
-              tooltip="On Cropped bars, shapes the Assisted Highlight ring to the button instead of a square.",
-              disabled=function() return AssistOff() or (p.assistGlowStyle or 1) == 2 end,
-              disabledTooltip="This option requires a style that draws the glow ring",
-              rawTooltip=true,
-              getValue=function() return p.assistGlowFitCropped or false end,
-              setValue=function(v)
-                  p.assistGlowFitCropped = v
-                  ns.UpdateAssistHighlights()
-              end });  y = y - h
 
         return math.abs(y)
     end
