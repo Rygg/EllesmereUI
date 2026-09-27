@@ -5,8 +5,16 @@ if not (LDB and type(PORTALS) == "table") then return end
 
 local MAX_RUNS = 16
 local TIP_WIDTH = 312
+local TIP_SIDE_PADDING = 12
 local ROW_HEIGHT = 16
 local TIP_TOP = 46
+local HEADER_TOP = 32
+local COLUMNS = {
+    { label = "Dungeon", width = 112, gap = 4, justify = "LEFT" },
+    { label = "Key", width = 46, gap = 10, justify = "RIGHT" },
+    { label = "Rating", width = 36, gap = 2, justify = "RIGHT" },
+    { label = "Run (Limit)", width = 78, gap = 0, justify = "RIGHT" },
+}
 
 local format = string.format
 local floor = math.floor
@@ -22,10 +30,6 @@ local eventFrame
 local tooltip
 local owner
 local titleText
-local dungeonHeader
-local keyHeader
-local ratingHeader
-local timeHeader
 local hintText
 local rows = {}
 local actionHost
@@ -35,6 +39,18 @@ local IsCursorOver, HideTooltip, HideTeleportActions, RenderTooltip
 
 local function IsSecret(value)
     return issecretvalue and issecretvalue(value)
+end
+
+local function LayoutColumns(cells, parent, originX, anchorPoint, y)
+    local x = 0
+    for index, column in ipairs(COLUMNS) do
+        local cell = cells[index]
+        cell:ClearAllPoints()
+        cell:SetPoint(anchorPoint, parent, anchorPoint, originX + x, y)
+        cell:SetWidth(column.width)
+        cell:SetJustifyH(column.justify)
+        x = x + column.width + column.gap
+    end
 end
 
 local function GetScore()
@@ -154,31 +170,14 @@ local function EnsureTooltip()
     tooltip:Hide()
 
     titleText = tooltip:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    titleText:SetPoint("TOPLEFT", tooltip, "TOPLEFT", 12, -10)
+    titleText:SetPoint("TOPLEFT", tooltip, "TOPLEFT", TIP_SIDE_PADDING, -10)
 
-    dungeonHeader = tooltip:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    dungeonHeader:SetPoint("TOPLEFT", tooltip, "TOPLEFT", 12, -32)
-    dungeonHeader:SetWidth(112)
-    dungeonHeader:SetJustifyH("LEFT")
-    dungeonHeader:SetText("Dungeon")
-
-    keyHeader = tooltip:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    keyHeader:SetPoint("TOPLEFT", tooltip, "TOPLEFT", 128, -32)
-    keyHeader:SetWidth(46)
-    keyHeader:SetJustifyH("RIGHT")
-    keyHeader:SetText("Key")
-
-    ratingHeader = tooltip:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    ratingHeader:SetPoint("TOPRIGHT", tooltip, "TOPRIGHT", -92, -32)
-    ratingHeader:SetWidth(36)
-    ratingHeader:SetJustifyH("RIGHT")
-    ratingHeader:SetText("Rating")
-
-    timeHeader = tooltip:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    timeHeader:SetPoint("TOPRIGHT", tooltip, "TOPRIGHT", -12, -32)
-    timeHeader:SetWidth(78)
-    timeHeader:SetJustifyH("RIGHT")
-    timeHeader:SetText("Run (Limit)")
+    local headers = {}
+    for index, column in ipairs(COLUMNS) do
+        headers[index] = tooltip:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        headers[index]:SetText(column.label)
+    end
+    LayoutColumns(headers, tooltip, TIP_SIDE_PADDING, "TOPLEFT", -HEADER_TOP)
 
     hintText = tooltip:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     hintText:SetJustifyH("CENTER")
@@ -187,21 +186,11 @@ local function EnsureTooltip()
         local row = {}
         row.frame = CreateFrame("Frame", nil, tooltip)
         row.name = row.frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.name:SetPoint("LEFT", row.frame, "LEFT", 0, 0)
-        row.name:SetWidth(112)
-        row.name:SetJustifyH("LEFT")
         row.level = row.frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.level:SetPoint("RIGHT", row.name, "RIGHT", 50, 0)
-        row.level:SetWidth(46)
-        row.level:SetJustifyH("RIGHT")
         row.rating = row.frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.rating:SetPoint("LEFT", row.name, "RIGHT", 60, 0)
-        row.rating:SetWidth(36)
-        row.rating:SetJustifyH("RIGHT")
         row.time = row.frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.time:SetPoint("LEFT", row.rating, "RIGHT", 2, 0)
-        row.time:SetWidth(78)
-        row.time:SetJustifyH("RIGHT")
+        row.columns = { row.name, row.level, row.rating, row.time }
+        LayoutColumns(row.columns, row.frame, 0, "LEFT", 0)
         row.time:SetTextColor(0.65, 0.65, 0.65)
         row.frame:Hide()
         rows[index] = row
@@ -418,8 +407,9 @@ RenderTooltip = function()
                 end
 
                 row.frame:ClearAllPoints()
-                row.frame:SetPoint("TOPLEFT", tooltip, "TOPLEFT", 12, -(TIP_TOP + (runCount - 1) * ROW_HEIGHT))
-                row.frame:SetPoint("TOPRIGHT", tooltip, "TOPRIGHT", -12,
+                row.frame:SetPoint("TOPLEFT", tooltip, "TOPLEFT", TIP_SIDE_PADDING,
+                    -(TIP_TOP + (runCount - 1) * ROW_HEIGHT))
+                row.frame:SetPoint("TOPRIGHT", tooltip, "TOPRIGHT", -TIP_SIDE_PADDING,
                     -(TIP_TOP + (runCount - 1) * ROW_HEIGHT))
                 row.frame:SetHeight(ROW_HEIGHT)
                 row.frame:Show()
