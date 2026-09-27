@@ -160,7 +160,7 @@ end
 
 local function RenderTooltip()
     local score = GetScore()
-    local title = "Current Rating: "
+    local title = "Mythic+ Rating: "
     if score then
         title = title .. "|cff" .. GetColorHex(GetScoreColor(score)) .. tostring(score) .. "|r"
     else
