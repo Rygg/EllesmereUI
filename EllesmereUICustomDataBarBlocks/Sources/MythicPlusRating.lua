@@ -176,8 +176,9 @@ local function RenderTooltip()
         "|cff" .. MUTED_HEX .. "Run (Limit)|r",
     }, 0.8, 0.8, 0.8)
 
-    local runCount, readyCount = 0, 0
+    local runCount, readyCount, knownCount = 0, 0, 0
     local soonestCooldown
+    local ar, ag, ab = GetAccentColor()
     local mapsOK, mapIDs = false, nil
     if C_ChallengeMode and C_ChallengeMode.GetMapTable
        and C_ChallengeMode.GetMapUIInfo and C_MythicPlus and C_MythicPlus.GetSeasonBestForMap then
@@ -204,6 +205,7 @@ local function RenderTooltip()
                 local spellID = GetKnownPortal(dungeonName)
                 local cooldown = spellID and GetSpellCooldownRemaining(spellID)
                 local readySpellID
+                if spellID then knownCount = knownCount + 1 end
                 if cooldown == 0 then
                     readySpellID = spellID
                     readyCount = readyCount + 1
@@ -249,6 +251,7 @@ local function RenderTooltip()
                 tokenBuffer[2] = ratingText
                 tokenBuffer[3] = timeText
                 if readySpellID then
+                    -- White at rest; the tip kit's row overlay accents it on hover as the click cue.
                     ns.Tip_AddActionColumns(dungeonName, tokenBuffer, readySpellID)
                 else
                     ns.Tip_AddColumns(dungeonName, tokenBuffer)
@@ -257,15 +260,18 @@ local function RenderTooltip()
         end
     end
 
-    if runCount > 0 and readyCount == 0 then
-        local hint = "No portals available"
-        if soonestCooldown then
-            hint = hint .. " - Available in " .. FormatRunTime(ceil(soonestCooldown))
+    if knownCount > 0 then
+        ns.Tip_AddLine(" ")
+        ns.Tip_AddLine("Portals", ar, ag, ab)
+        if readyCount > 0 then
+            ns.Tip_AddLine("Click a dungeon to teleport", 0.8, 0.8, 0.8)
+        else
+            -- All portals share one cooldown, so a single soonest reading covers every dungeon.
+            local cdText = soonestCooldown and FormatRunTime(ceil(soonestCooldown)) or "-"
+            ns.Tip_AddDouble("On Cooldown", cdText, 0.65, 0.65, 0.65, 0.5, 0.5, 0.5)
         end
-        ns.Tip_AddLine(hint, 0.8, 0.8, 0.8)
     end
 
-    local ar, ag, ab = GetAccentColor()
     ns.Tip_AddLine(" ")
     ns.Tip_AddDouble("Left Click:", "Open Mythic+ Dungeons", 1, 1, 1, ar, ag, ab)
     ns.Tip_AddDouble("Right Click:", "Open Dungeons & Raids", 1, 1, 1, ar, ag, ab)
