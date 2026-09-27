@@ -26,7 +26,6 @@ local dungeonHeader
 local keyHeader
 local ratingHeader
 local timeHeader
-local emptyText
 local hintText
 local rows = {}
 local actionHost
@@ -181,10 +180,6 @@ local function EnsureTooltip()
     timeHeader:SetJustifyH("RIGHT")
     timeHeader:SetText("Run (Limit)")
 
-    emptyText = tooltip:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-    emptyText:SetPoint("TOPLEFT", tooltip, "TOPLEFT", 12, -TIP_TOP)
-    emptyText:SetText("No runs recorded this season")
-
     hintText = tooltip:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     hintText:SetJustifyH("CENTER")
 
@@ -262,28 +257,6 @@ local function EnsureActionHost()
     actionHost:SetFrameLevel(910)
     RegisterStateDriver(actionHost, "visibility", "[combat] hide; show")
     actionHost:Hide()
-
-    local regenFrame = CreateFrame("Frame")
-    regenFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
-    regenFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
-    regenFrame:SetScript("OnEvent", function(_, event)
-        if event == "PLAYER_REGEN_DISABLED" then
-            actionsDirty = false
-            for index = 1, #actionButtons do
-                local button = actionButtons[index]
-                button:Hide()
-                button:ClearAllPoints()
-            end
-            actionHost:ClearAllPoints()
-            actionHost:SetSize(1, 1)
-            return
-        end
-        if actionsDirty then HideTeleportActions() end
-        if tooltip and tooltip:IsShown()
-           and (IsCursorOver(owner) or IsCursorOver(tooltip)) then
-            RenderTooltip()
-        end
-    end)
     return true
 end
 
@@ -339,7 +312,7 @@ local function UpdateTeleportActions(runCount)
 end
 
 local function PositionTooltip()
-    if not (owner and owner.GetTop and owner.GetBottom) then
+    if not (owner and owner.GetTop) then
         tooltip:SetPoint("CENTER", UIParent, "CENTER")
         return
     end
@@ -463,13 +436,6 @@ RenderTooltip = function()
     end
 
     local contentHeight = TIP_TOP + max(runCount, 1) * ROW_HEIGHT
-    if runCount == 0 then
-        emptyText:ClearAllPoints()
-        emptyText:SetPoint("TOPLEFT", tooltip, "TOPLEFT", 12, -TIP_TOP)
-        emptyText:Show()
-    else
-        emptyText:Hide()
-    end
     hintText:ClearAllPoints()
     if readyCount > 0 then
         hintText:SetText("Ready portals: click a dungeon")
