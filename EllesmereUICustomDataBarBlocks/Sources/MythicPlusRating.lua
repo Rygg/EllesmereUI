@@ -167,18 +167,19 @@ local function RenderTooltip()
         title = title .. "-"
     end
 
+    local ar, ag, ab = GetAccentColor()
+
     ns.Tip_Begin(owner)
     ns.Tip_AddLine(title, 1, 1, 1)
     ns.Tip_AddLine(" ")
     ns.Tip_AddColumns("Dungeon", {
-        "|cff" .. MUTED_HEX .. "Key|r",
-        "|cff" .. MUTED_HEX .. "Rating|r",
-        "|cff" .. MUTED_HEX .. "Run (Limit)|r",
-    }, 0.8, 0.8, 0.8)
+        "|cff" .. MUTED_HEX .. "Level|r",
+        "|cff" .. MUTED_HEX .. "Score|r",
+        "|cff" .. MUTED_HEX .. "Time (Limit)|r",
+    }, ar, ag, ab)
 
     local runCount, readyCount, knownCount = 0, 0, 0
     local soonestCooldown
-    local ar, ag, ab = GetAccentColor()
     local mapsOK, mapIDs = false, nil
     if C_ChallengeMode and C_ChallengeMode.GetMapTable
        and C_ChallengeMode.GetMapUIInfo and C_MythicPlus and C_MythicPlus.GetSeasonBestForMap then
