@@ -18,6 +18,7 @@ local COLUMNS = {
 
 local format = string.format
 local floor = math.floor
+local ceil = math.ceil
 local max = math.max
 local type = type
 local ipairs = ipairs
@@ -133,18 +134,18 @@ local function GetKnownPortal(dungeonName)
     end
 end
 
-local function SpellReady(spellID)
+local function GetSpellCooldownRemaining(spellID)
     if not (C_Spell and C_Spell.GetSpellCooldown) then return false end
     local ok, info = pcall(C_Spell.GetSpellCooldown, spellID)
-    if not ok or IsSecret(info) or type(info) ~= "table" then return false end
+    if not ok or IsSecret(info) or type(info) ~= "table" then return nil end
     local startTime, duration = info.startTime, info.duration
     if IsSecret(startTime) or IsSecret(duration)
        or type(startTime) ~= "number" or type(duration) ~= "number" then
-        return false
+        return nil
     end
-    if not canaccessvalue(startTime) or not canaccessvalue(duration) then return false end
-    if duration <= 0 then return true end
-    return startTime + duration <= GetTime()
+    if not canaccessvalue(startTime) or not canaccessvalue(duration) then return nil end
+    if duration <= 0 then return 0 end
+    return max(0, startTime + duration - GetTime())
 end
 
 local function EnsureTooltip()
@@ -330,6 +331,7 @@ RenderTooltip = function()
     titleText:SetText(title)
 
     local runCount, readyCount = 0, 0
+    local soonestCooldown
     local mapsOK, mapIDs = false, nil
     if C_ChallengeMode and C_ChallengeMode.GetMapTable
        and C_ChallengeMode.GetMapUIInfo and C_MythicPlus and C_MythicPlus.GetSeasonBestForMap then
@@ -356,12 +358,15 @@ RenderTooltip = function()
                 local row = rows[runCount]
                 row.name:SetText(dungeonName)
                 local spellID = GetKnownPortal(dungeonName)
-                local ready = spellID and SpellReady(spellID) or false
-                if ready then
+                local cooldown = spellID and GetSpellCooldownRemaining(spellID)
+                if cooldown == 0 then
                     row.spellID = spellID
                     readyCount = readyCount + 1
                 else
                     row.spellID = nil
+                    if cooldown and (not soonestCooldown or cooldown < soonestCooldown) then
+                        soonestCooldown = cooldown
+                    end
                 end
 
                 local level, elapsed, dungeonScore, runTime
@@ -426,16 +431,20 @@ RenderTooltip = function()
     end
 
     local contentHeight = TIP_TOP + max(runCount, 1) * ROW_HEIGHT
-    hintText:ClearAllPoints()
-    if readyCount > 0 then
-        hintText:SetText("Ready portals: click a dungeon")
+    if runCount > 0 and readyCount == 0 then
+        local hint = "No portals available"
+        if soonestCooldown then
+            hint = hint .. " - Available in " .. FormatRunTime(ceil(soonestCooldown))
+        end
+        hintText:SetText(hint)
+        hintText:ClearAllPoints()
         hintText:SetPoint("TOP", tooltip, "TOP", 0, -(contentHeight + 4))
         hintText:Show()
-        contentHeight = contentHeight + 22
+        contentHeight = contentHeight + 10
     else
         hintText:Hide()
     end
-    tooltip:SetHeight(contentHeight + 12)
+    tooltip:SetHeight(contentHeight + 14)
     PositionTooltip()
     tooltip:Show()
     UpdateTeleportActions(runCount)
