@@ -96,6 +96,21 @@ local function TimerChestCount(elapsed, limit, inTime)
     return 1
 end
 
+local function GetRunTimeColor(chestCount)
+    if chestCount == 0 then return "a6a6a6" end
+    if chestCount == 2 then
+        local accent = EUI and EUI.ELLESMERE_GREEN
+        if type(accent) == "table" and type(accent.r) == "number"
+           and type(accent.g) == "number" and type(accent.b) == "number" then
+            return format("%02x%02x%02x", floor(accent.r * 255 + 0.5),
+                floor(accent.g * 255 + 0.5), floor(accent.b * 255 + 0.5))
+        end
+        return "0cd29d"
+    end
+    if chestCount == 3 then return "59b8ff" end
+    return "ffffff"
+end
+
 local function GetDungeonScoreColor(score)
     if IsSecret(score) or type(score) ~= "number"
        or not (C_ChallengeMode and C_ChallengeMode.GetSpecificDungeonOverallScoreRarityColor) then
@@ -395,12 +410,8 @@ RenderTooltip = function()
                         row.rating:SetTextColor(0.86, 0.86, 0.86)
                     end
                     local limitText = FormatRunTime(timeLimit)
-                    row.time:SetText(runTime .. " |cff888888(" .. (limitText or "-") .. ")|r")
-                    if chestCount == 0 then
-                        row.time:SetTextColor(0.65, 0.65, 0.65)
-                    else
-                        row.time:SetTextColor(1, 1, 1)
-                    end
+                    row.time:SetText("|cff" .. GetRunTimeColor(chestCount) .. runTime
+                        .. "|r |cff888888(" .. (limitText or "-") .. ")|r")
                 else
                     row.level:SetText("-")
                     row.level:SetTextColor(0.65, 0.65, 0.65)
