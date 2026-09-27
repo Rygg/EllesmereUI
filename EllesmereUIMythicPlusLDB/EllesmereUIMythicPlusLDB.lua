@@ -25,6 +25,9 @@ local ipairs = ipairs
 local pcall = pcall
 local GetTime = GetTime
 local InCombatLockdown = InCombatLockdown
+local ITEM_QUALITY_COLORS = ITEM_QUALITY_COLORS
+local MUTED_TEXT_COLOR = ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[0]
+    or { r = 0.667, g = 0.667, b = 0.667 }
 
 local dataObject
 local eventFrame
@@ -71,7 +74,31 @@ local function GetScoreColor(score)
             return color.r, color.g, color.b
         end
     end
-    return 1, 1, 1
+    return EUI.ELLESMERE_GREEN.r, EUI.ELLESMERE_GREEN.g, EUI.ELLESMERE_GREEN.b
+end
+
+local function GetDungeonScoreColor(score)
+    if not (C_ChallengeMode and C_ChallengeMode.GetSpecificDungeonOverallScoreRarityColor) then
+        return GetScoreColor(score)
+    end
+    local ok, color = pcall(C_ChallengeMode.GetSpecificDungeonOverallScoreRarityColor, score)
+    if ok and type(color) == "table"
+       and type(color.r) == "number" and type(color.g) == "number" and type(color.b) == "number" then
+        return color.r, color.g, color.b
+    end
+    return GetScoreColor(score)
+end
+
+local function GetAccentColor()
+    if EUI.GetAccentColor then
+        local red, green, blue = EUI.GetAccentColor()
+        if type(red) == "number" and type(green) == "number" and type(blue) == "number" then
+            return red, green, blue
+        end
+    end
+    local accent = EUI.ELLESMERE_GREEN
+    if type(accent) == "table" then return accent.r, accent.g, accent.b end
+    return EUI.TEXT_WHITE.r, EUI.TEXT_WHITE.g, EUI.TEXT_WHITE.b
 end
 
 local function FormatRunTime(seconds)
@@ -96,32 +123,32 @@ local function TimerChestCount(elapsed, limit, inTime)
     return 1
 end
 
-local function GetRunTimeColor(chestCount)
-    if chestCount == 0 then return "a6a6a6" end
-    if chestCount == 2 then
-        local accent = EUI and EUI.ELLESMERE_GREEN
-        if type(accent) == "table" and type(accent.r) == "number"
-           and type(accent.g) == "number" and type(accent.b) == "number" then
-            return format("%02x%02x%02x", floor(accent.r * 255 + 0.5),
-                floor(accent.g * 255 + 0.5), floor(accent.b * 255 + 0.5))
-        end
-        return "0cd29d"
+local function GetColorHex(red, green, blue)
+    if type(red) == "table" then
+        red, green, blue = red.r, red.g, red.b
     end
-    if chestCount == 3 then return "59b8ff" end
-    return "ffffff"
+    if type(red) ~= "number" or type(green) ~= "number" or type(blue) ~= "number" then
+        red, green, blue = EUI.TEXT_WHITE.r, EUI.TEXT_WHITE.g, EUI.TEXT_WHITE.b
+    end
+    return format("%02x%02x%02x", floor(red * 255 + 0.5), floor(green * 255 + 0.5), floor(blue * 255 + 0.5))
 end
 
-local function GetDungeonScoreColor(score)
-    if IsSecret(score) or type(score) ~= "number"
-       or not (C_ChallengeMode and C_ChallengeMode.GetSpecificDungeonOverallScoreRarityColor) then
-        return 1, 1, 1
+local function ApplyTooltipFont(fontString, size, color)
+    EUI.ApplyModuleFont(fontString, nil, size)
+    fontString:SetTextColor(color.r, color.g, color.b)
+end
+
+local function GetRunTimeColor(chestCount)
+    if chestCount == 0 then return GetColorHex(MUTED_TEXT_COLOR) end
+    if chestCount == 3 then
+        local color = ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[3]
+        if color then return GetColorHex(color) end
+        return GetColorHex(EUI.TEXT_WHITE)
     end
-    local ok, color = pcall(C_ChallengeMode.GetSpecificDungeonOverallScoreRarityColor, score)
-    if ok and not IsSecret(color) and type(color) == "table"
-       and type(color.r) == "number" and type(color.g) == "number" and type(color.b) == "number" then
-        return color.r, color.g, color.b
+    if chestCount == 2 then
+        return GetColorHex(GetAccentColor())
     end
-    return 1, 1, 1
+    return GetColorHex(EUI.TEXT_WHITE)
 end
 
 local function IsKnownSpell(spellID)
@@ -181,33 +208,39 @@ local function EnsureTooltip()
         edgeSize = 12,
         insets = { left = 4, right = 4, top = 4, bottom = 4 },
     })
-    tooltip:SetBackdropColor(0.055, 0.055, 0.055, 0.96)
-    tooltip:SetBackdropBorderColor(0.18, 0.18, 0.18, 1)
+    tooltip:SetBackdropColor(EUI.DARK_BG.r, EUI.DARK_BG.g, EUI.DARK_BG.b)
+    tooltip:SetBackdropBorderColor(EUI.BORDER_COLOR.r, EUI.BORDER_COLOR.g,
+        EUI.BORDER_COLOR.b, EUI.BORDER_COLOR.a)
     tooltip:Hide()
 
-    titleText = tooltip:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    titleText = tooltip:CreateFontString(nil, "OVERLAY")
+    ApplyTooltipFont(titleText, 12, EUI.TEXT_WHITE)
     titleText:SetPoint("TOPLEFT", tooltip, "TOPLEFT", TIP_SIDE_PADDING, -10)
 
     local headers = {}
     for index, column in ipairs(COLUMNS) do
-        headers[index] = tooltip:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+        headers[index] = tooltip:CreateFontString(nil, "OVERLAY")
+        ApplyTooltipFont(headers[index], 10, MUTED_TEXT_COLOR)
         headers[index]:SetText(column.label)
     end
     LayoutColumns(headers, tooltip, TIP_SIDE_PADDING, "TOPLEFT", -HEADER_TOP)
 
-    hintText = tooltip:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    hintText = tooltip:CreateFontString(nil, "OVERLAY")
+    ApplyTooltipFont(hintText, 10, MUTED_TEXT_COLOR)
     hintText:SetJustifyH("CENTER")
 
     for index = 1, MAX_RUNS do
         local row = {}
         row.frame = CreateFrame("Frame", nil, tooltip)
-        row.name = row.frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.level = row.frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.rating = row.frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.time = row.frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        row.name = row.frame:CreateFontString(nil, "OVERLAY")
+        row.level = row.frame:CreateFontString(nil, "OVERLAY")
+        row.rating = row.frame:CreateFontString(nil, "OVERLAY")
+        row.time = row.frame:CreateFontString(nil, "OVERLAY")
         row.columns = { row.name, row.level, row.rating, row.time }
+        for _, fontString in ipairs(row.columns) do
+            ApplyTooltipFont(fontString, 10, EUI.TEXT_WHITE)
+        end
         LayoutColumns(row.columns, row.frame, 0, "LEFT", 0)
-        row.time:SetTextColor(0.65, 0.65, 0.65)
         row.frame:Hide()
         rows[index] = row
     end
@@ -218,6 +251,11 @@ local function EnsureTooltip()
     tooltip:SetScript("OnHide", function()
         if actionHost then HideTeleportActions() end
     end)
+    if EUI and EUI.RegAccent then
+        EUI.RegAccent({ type = "callback", fn = function()
+            if tooltip and tooltip:IsShown() then RenderTooltip() end
+        end })
+    end
     return tooltip
 end
 
@@ -276,7 +314,8 @@ local function EnsureActionButton(index)
     button:SetAttribute("type1", "spell")
     local highlight = button:CreateTexture(nil, "HIGHLIGHT")
     highlight:SetAllPoints()
-    highlight:SetColorTexture(1, 1, 1, 0.10)
+    local red, green, blue = EUI.TEXT_WHITE.r, EUI.TEXT_WHITE.g, EUI.TEXT_WHITE.b
+    highlight:SetColorTexture(red, green, blue, 0.10)
     button:HookScript("PostClick", HideTooltip)
     actionButtons[index] = button
     return button
@@ -406,20 +445,20 @@ RenderTooltip = function()
                         row.rating:SetTextColor(red, green, blue)
                     else
                         row.rating:SetText("-")
-                        row.level:SetTextColor(1, 1, 1)
-                        row.rating:SetTextColor(0.86, 0.86, 0.86)
+                        row.level:SetTextColor(MUTED_TEXT_COLOR.r, MUTED_TEXT_COLOR.g, MUTED_TEXT_COLOR.b)
+                        row.rating:SetTextColor(MUTED_TEXT_COLOR.r, MUTED_TEXT_COLOR.g, MUTED_TEXT_COLOR.b)
                     end
                     local limitText = FormatRunTime(timeLimit)
                     row.time:SetText("|cff" .. GetRunTimeColor(chestCount) .. runTime
-                        .. "|r |cff888888(" .. (limitText or "-") .. ")|r")
+                        .. "|r |cff" .. GetColorHex(MUTED_TEXT_COLOR) .. "(" .. (limitText or "-") .. ")|r")
                 else
                     row.level:SetText("-")
-                    row.level:SetTextColor(0.65, 0.65, 0.65)
+                    row.level:SetTextColor(MUTED_TEXT_COLOR.r, MUTED_TEXT_COLOR.g, MUTED_TEXT_COLOR.b)
                     row.rating:SetText("-")
-                    row.rating:SetTextColor(0.65, 0.65, 0.65)
+                    row.rating:SetTextColor(MUTED_TEXT_COLOR.r, MUTED_TEXT_COLOR.g, MUTED_TEXT_COLOR.b)
                     local limitText = FormatRunTime(timeLimit)
-                    row.time:SetText("- |cff888888(" .. (limitText or "-") .. ")|r")
-                    row.time:SetTextColor(0.65, 0.65, 0.65)
+                    row.time:SetText("- |cff" .. GetColorHex(MUTED_TEXT_COLOR) .. "(" .. (limitText or "-") .. ")|r")
+                    row.time:SetTextColor(MUTED_TEXT_COLOR.r, MUTED_TEXT_COLOR.g, MUTED_TEXT_COLOR.b)
                 end
 
                 row.frame:ClearAllPoints()
