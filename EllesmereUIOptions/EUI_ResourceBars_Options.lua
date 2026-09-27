@@ -1872,6 +1872,317 @@ initFrame:SetScript("OnEvent", function(self)
         buffPopup:Show()
     end
 
+    -- Spender colors editor: per-threshold-entry list of { spellID, r,g,b,a }. The bar
+    -- takes a spell's color while it is castable; the FIRST castable spell in the list
+    -- (list order = priority) wins. Stored on the entry (per-spec via its specIDs).
+    -- Mirrors the buff colors editor; edits CurrentSpenderEntry().spenderColors.
+    local spenderPopup
+    local _spenderRows = {}
+    local _spenderEntryIdx
+    local _spenderGetBarData, _spenderRefreshFn
+    local _spenderTitleFS, _spenderAddBtn
+    local SPENDER_POPUP_W = 320
+    local SPENDER_ROW_H = 26
+    local RefreshSpenderEditor  -- forward decl
+    -- Drag-to-reorder (list order = spender priority); mirrors the buff colors editor.
+    local _SpenderDragTick      -- forward decl
+    local _spenderInsLine       -- insertion-line texture
+    local _spenderDrag = { row = nil, startY = nil, active = false }
+    local SPENDER_STEP = SPENDER_ROW_H + 4
+    local SPENDER_HELP_TIP =
+        "Recolor the bar while a spell is castable (usable and off cooldown). The first castable spell in the list wins, so order = priority. An active tracked buff from Buff Colors takes priority.\n"
+        .. "For abilities that change while active (e.g. Void Metamorphosis becoming Collapsing Star), enter the original spell's ID."
+
+    local function CurrentSpenderEntry()
+        if not _spenderEntryIdx or not _spenderGetBarData then return nil end
+        local bd = _spenderGetBarData(); if not bd or not bd.thresholdSpecs then return nil end
+        return bd.thresholdSpecs[_spenderEntryIdx]
+    end
+
+    local function BuildSpenderPopup()
+        spenderPopup = CreateFrame("Frame", nil, UIParent)
+        spenderPopup:SetFrameStrata("FULLSCREEN_DIALOG")
+        spenderPopup:SetFrameLevel(260)
+        spenderPopup:SetClampedToScreen(true)
+        spenderPopup:EnableMouse(true)
+        spenderPopup:SetScale(0.9)
+        spenderPopup:Hide()
+        PP.Size(spenderPopup, SPENDER_POPUP_W, 200)
+        local bg = spenderPopup:CreateTexture(nil, "BACKGROUND")
+        bg:SetAllPoints(); bg:SetColorTexture(0.06, 0.08, 0.10, 0.97)
+        PP.CreateBorder(spenderPopup, 1, 1, 1, 0.18, 1, "BORDER", 7)
+
+        -- Insertion line shown while dragging a row to reorder
+        _spenderInsLine = spenderPopup:CreateTexture(nil, "OVERLAY", nil, 7)
+        _spenderInsLine:SetHeight(2)
+        -- ELLESMERE_GREEN is the resolved theme accent (ACCENT_COLOR is never set); matches the raid "Sort By" reorder line
+        local _silEG = EllesmereUI.ELLESMERE_GREEN or { r = 0.05, g = 0.82, b = 0.62 }
+        _spenderInsLine:SetColorTexture(_silEG.r, _silEG.g, _silEG.b, 0.9)
+        _spenderInsLine:Hide()
+
+        local clickCatcher = CreateFrame("Button", nil, spenderPopup)
+        clickCatcher:SetFrameStrata("FULLSCREEN_DIALOG")
+        clickCatcher:SetFrameLevel(spenderPopup:GetFrameLevel() - 1)
+        clickCatcher:SetAllPoints((EllesmereUI:GetMainFrame()) or UIParent)
+        clickCatcher:SetScript("OnClick", function() if _spenderDrag.active then return end spenderPopup:Hide() end)
+        clickCatcher:Hide()
+        spenderPopup:SetScript("OnShow", function(self)
+            clickCatcher:Show()
+            self:SetScript("OnUpdate", function(pp)
+                if _spenderDrag.row then _SpenderDragTick(); return end  -- dragging: move/reorder, never dismiss
+                if IsMouseButtonDown("LeftButton") then
+                    local mf = EllesmereUI._mainFrame
+                    if not pp:IsMouseOver() and not (mf and mf:IsMouseOver()) then pp:Hide() end
+                end
+            end)
+        end)
+        spenderPopup:SetScript("OnHide", function(self) clickCatcher:Hide(); self:SetScript("OnUpdate", nil) end)
+
+        _spenderTitleFS = EllesmereUI.MakeFont(spenderPopup, 13, nil, 1, 1, 1)
+        _spenderTitleFS:SetAlpha(0.7)
+        _spenderTitleFS:SetPoint("TOP", spenderPopup, "TOP", 0, -BAND_PAD)
+        _spenderTitleFS:SetText(EllesmereUI.L("Spenders"))
+		local ht = spenderPopup:CreateFontString(nil, "OVERLAY")
+		local FONT = (EllesmereUI.GetFontPath()) or "Fonts\\FRIZQT__.TTF"
+		ht:SetFont(FONT, 10, "")
+		ht:SetPoint("TOPLEFT", spenderPopup, "TOPLEFT", 16, -BAND_PAD - 4)
+		ht:SetTextColor(1, 1, 1, 0.25)
+		ht:SetText(EllesmereUI.L("Drag to Reorder"))
+
+        _spenderAddBtn = CreateFrame("Button", nil, spenderPopup)
+        PP.Size(_spenderAddBtn, SPENDER_POPUP_W - BAND_PAD * 2, 26)
+        _spenderAddBtn:SetFrameLevel(spenderPopup:GetFrameLevel() + 3)
+        local abg = EllesmereUI.SolidTex(_spenderAddBtn, "BACKGROUND", 0.05, 0.07, 0.09, 0.92)
+        abg:SetAllPoints()
+        _spenderAddBtn._border = EllesmereUI.MakeBorder(_spenderAddBtn, 1, 1, 1, 0.4, PP)
+        local albl = EllesmereUI.MakeFont(_spenderAddBtn, 12, nil, 1, 1, 1)
+        albl:SetAlpha(0.5); albl:SetPoint("CENTER"); albl:SetText(EllesmereUI.L("+ Add Spender"))
+        _spenderAddBtn:SetScript("OnEnter", function() albl:SetAlpha(0.7); if _spenderAddBtn._border and _spenderAddBtn._border.SetColor then _spenderAddBtn._border:SetColor(1, 1, 1, 0.6) end end)
+        _spenderAddBtn:SetScript("OnLeave", function() albl:SetAlpha(0.5); if _spenderAddBtn._border and _spenderAddBtn._border.SetColor then _spenderAddBtn._border:SetColor(1, 1, 1, 0.4) end end)
+        _spenderAddBtn:SetScript("OnClick", function()
+            local ent = CurrentSpenderEntry(); if not ent then return end
+            if not ent.spenderColors then ent.spenderColors = {} end
+            ent.spenderColors[#ent.spenderColors + 1] = { spellID = nil, r = 0.2, g = 0.6, b = 1.0, a = 1 }
+            if _spenderRefreshFn then _spenderRefreshFn() end
+            RefreshSpenderEditor()
+        end)
+    end
+
+    local function EnsureSpenderRow(k)
+        local row = _spenderRows[k]
+        if row then return row end
+        row = {}
+        local rf = CreateFrame("Frame", nil, spenderPopup)
+        rf:SetSize(SPENDER_POPUP_W - BAND_PAD * 2, SPENDER_ROW_H)
+        rf:SetFrameLevel(spenderPopup:GetFrameLevel() + 2)
+        row.frame = rf
+
+        local input = CreateFrame("EditBox", nil, rf)
+        input:SetSize(58, 22)
+        input:SetPoint("LEFT", rf, "LEFT", 16, 0)
+        input:SetFrameLevel(rf:GetFrameLevel() + 2)
+        input:SetAutoFocus(false)
+        local inFont = EllesmereUI.GetFontPath("main") or "Fonts\\FRIZQT__.TTF"
+        input:SetFont(inFont, 12, "")
+        input:SetTextColor(1, 1, 1, 0.75)
+        input:SetJustifyH("CENTER")
+        input:SetNumeric(true)
+        input:SetMaxLetters(7)
+        local inBg = input:CreateTexture(nil, "BACKGROUND"); inBg:SetAllPoints()
+        inBg:SetColorTexture(0.12, 0.12, 0.12, 0.8)
+        EllesmereUI.MakeBorder(input, 1, 1, 1, 0.08, PP)
+        row.input = input
+
+        -- Drag grip: list order = spender priority, so rows are draggable
+        local grip = CreateFrame("Button", nil, rf)
+        grip:SetSize(14, SPENDER_ROW_H)
+        grip:SetPoint("LEFT", rf, "LEFT", 0, 0)
+        grip:SetFrameLevel(rf:GetFrameLevel() + 4)
+        local gripFS = grip:CreateFontString(nil, "OVERLAY")
+        gripFS:SetFont(inFont, 13, "")
+        gripFS:SetPoint("CENTER")
+        gripFS:SetText("=")
+        gripFS:SetTextColor(1, 1, 1, 0.25)
+        grip:SetScript("OnEnter", function() gripFS:SetTextColor(1, 1, 1, 0.6) end)
+        grip:SetScript("OnLeave", function() gripFS:SetTextColor(1, 1, 1, 0.25) end)
+        grip:SetScript("OnMouseDown", function(self, b)
+            if b ~= "LeftButton" then return end
+            local _, cy = GetCursorPosition()
+            _spenderDrag.row = row; _spenderDrag.startY = cy; _spenderDrag.active = false
+        end)
+        row.grip = grip
+
+        local nameFS = EllesmereUI.MakeFont(rf, 11, nil, 1, 1, 1)
+        nameFS:SetAlpha(0.6)
+        nameFS:SetPoint("LEFT", input, "RIGHT", 8, 0)
+        nameFS:SetJustifyH("LEFT")
+        nameFS:SetWidth(150)
+        nameFS:SetWordWrap(false)
+        row.nameFS = nameFS
+
+        local function RefreshName()
+            local ent = CurrentSpenderEntry()
+            local e = ent and ent.spenderColors and ent.spenderColors[row._idx]
+            local id = e and e.spellID
+            if id and C_Spell and C_Spell.GetSpellName then
+                nameFS:SetText(C_Spell.GetSpellName(id) or "|cffcc5555Unknown ID|r")
+            else
+                nameFS:SetText("|cff888888(enter Spell ID)|r")
+            end
+        end
+        row.RefreshName = RefreshName
+
+        local function CommitInput(self)
+            if self._cancelCommit then self._cancelCommit = nil; return end
+            local ent = CurrentSpenderEntry()
+            local e = ent and ent.spenderColors and ent.spenderColors[row._idx]
+            if not e then return end
+            local val = tonumber(self:GetText())
+            e.spellID = (val and val > 0) and val or nil
+            RefreshName()
+            if _spenderRefreshFn then _spenderRefreshFn() end
+        end
+        input:SetScript("OnEditFocusLost", CommitInput)
+        input:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+        input:SetScript("OnEscapePressed", function(self) self._cancelCommit = true; self:ClearFocus(); RefreshSpenderEditor() end)
+
+        local swatch, swatchSnap = EllesmereUI.BuildColorSwatch(rf, rf:GetFrameLevel() + 3,
+            function()
+                local ent = CurrentSpenderEntry()
+                local e = ent and ent.spenderColors and ent.spenderColors[row._idx]
+                if not e then return 0.2, 0.6, 1.0, 1 end
+                return e.r or 0.2, e.g or 0.6, e.b or 1.0, e.a or 1
+            end,
+            function(r, g, b, a)
+                local ent = CurrentSpenderEntry()
+                local e = ent and ent.spenderColors and ent.spenderColors[row._idx]
+                if e then e.r, e.g, e.b, e.a = r, g, b, a; if _spenderRefreshFn then _spenderRefreshFn() end end
+            end, true, 19)
+        swatch:SetPoint("RIGHT", rf, "RIGHT", -24, 0)
+        row.swatch = swatch
+        row.swatchSnap = swatchSnap
+
+        local delBtn = CreateFrame("Button", nil, rf)
+        delBtn:SetSize(14, 14)
+        delBtn:SetPoint("RIGHT", rf, "RIGHT", -2, 0)
+        delBtn:SetFrameLevel(rf:GetFrameLevel() + 3)
+        local delIcon = delBtn:CreateTexture(nil, "OVERLAY")
+        delIcon:SetAllPoints(); delIcon:SetTexture(_bandCloseIcon); delIcon:SetAlpha(0.4)
+        delBtn:SetScript("OnEnter", function() delIcon:SetAlpha(0.9) end)
+        delBtn:SetScript("OnLeave", function() delIcon:SetAlpha(0.4) end)
+        delBtn:SetScript("OnClick", function()
+            local ent = CurrentSpenderEntry()
+            if ent and ent.spenderColors and ent.spenderColors[row._idx] then
+                table.remove(ent.spenderColors, row._idx)
+                if _spenderRefreshFn then _spenderRefreshFn() end
+                RefreshSpenderEditor()
+            end
+        end)
+        row.delBtn = delBtn
+
+        _spenderRows[k] = row
+        return row
+    end
+
+    RefreshSpenderEditor = function()
+        if not spenderPopup then return end
+        local ent = CurrentSpenderEntry()
+        if not ent then spenderPopup:Hide(); return end
+        if not ent.spenderColors then ent.spenderColors = {} end
+        local curY = -(BAND_PAD + 24)
+        local n = #ent.spenderColors
+        for k = 1, n do
+            local row = EnsureSpenderRow(k)
+            row._idx = k
+            row.frame:ClearAllPoints()
+            PP.Point(row.frame, "TOPLEFT", spenderPopup, "TOPLEFT", BAND_PAD, curY)
+            row._baseY = curY  -- for the drag-reorder hit test
+            row.frame:SetFrameLevel(spenderPopup:GetFrameLevel() + 2)  -- reset after a drag raised it
+            row.frame:SetAlpha(1)
+            row.input:SetText(ent.spenderColors[k].spellID and tostring(ent.spenderColors[k].spellID) or "")
+            if row.RefreshName then row.RefreshName() end
+            if row.swatchSnap then row.swatchSnap() end
+            row.frame:Show()
+            curY = curY - SPENDER_ROW_H - 4
+        end
+        for k = n + 1, #_spenderRows do if _spenderRows[k] then _spenderRows[k].frame:Hide() end end
+        curY = curY - 4
+        _spenderAddBtn:ClearAllPoints()
+        PP.Point(_spenderAddBtn, "TOPLEFT", spenderPopup, "TOPLEFT", BAND_PAD, curY)
+        curY = curY - 26
+        PP.Size(spenderPopup, SPENDER_POPUP_W, math.abs(curY) + BAND_PAD)
+    end
+
+    -- Runs each frame from the popup's OnUpdate while a grip is held: separates click from
+    -- drag, moves the row under the cursor with an insertion line, and on release reorders
+    -- ent.spenderColors (order = priority) and re-renders. Mirrors BuildCogPopup's 'reorder' row.
+    _SpenderDragTick = function()
+        local d = _spenderDrag
+        local row = d.row
+        if not row then return end
+        local down = IsMouseButtonDown("LeftButton")
+        local _, cy = GetCursorPosition()
+        if not d.active then
+            if not down then d.row = nil; return end          -- released before threshold = a click
+            if math.abs(cy - (d.startY or cy)) < 3 then return end
+            d.active = true
+            row.frame:SetFrameLevel(spenderPopup:GetFrameLevel() + 20)
+            row.frame:SetAlpha(0.85)
+        end
+        local ent = CurrentSpenderEntry()
+        local n = (ent and ent.spenderColors) and #ent.spenderColors or 0
+        local sc = spenderPopup:GetEffectiveScale()
+        local cY = cy / sc
+        local mT = spenderPopup:GetTop() or 0
+        -- Insertion index among the STATIC (non-dragged) rows
+        local iI = n
+        for ri = 1, n do
+            local r2 = _spenderRows[ri]
+            if r2 ~= row and r2._baseY then
+                local rm = mT + r2._baseY - SPENDER_ROW_H / 2
+                if cY > rm then iI = ri; break end
+                iI = ri + 1
+            end
+        end
+        iI = math.max(1, math.min(iI, n + 1))
+        if down then
+            local firstY = -(BAND_PAD + 24)
+            local lnY = (iI <= 1) and (firstY + 2) or (firstY - (iI - 1) * SPENDER_STEP + 2)
+            _spenderInsLine:ClearAllPoints()
+            _spenderInsLine:SetPoint("TOPLEFT", spenderPopup, "TOPLEFT", BAND_PAD, lnY)
+            _spenderInsLine:SetPoint("TOPRIGHT", spenderPopup, "TOPRIGHT", -BAND_PAD, lnY)
+            _spenderInsLine:Show()
+            row.frame:ClearAllPoints()
+            row.frame:SetPoint("TOPLEFT", spenderPopup, "TOPLEFT", BAND_PAD, cY - mT)
+        else
+            -- Dropped: reorder the list + re-render
+            local from = row._idx
+            if from and from < iI then iI = iI - 1 end
+            local to = math.max(1, math.min(iI, n))
+            _spenderInsLine:Hide()
+            d.row = nil; d.active = false
+            if ent and ent.spenderColors and from and from ~= to then
+                local mv = table.remove(ent.spenderColors, from)
+                table.insert(ent.spenderColors, to, mv)
+                if _spenderRefreshFn then _spenderRefreshFn() end
+            end
+            RefreshSpenderEditor()
+        end
+    end
+
+    local function ShowSpenderEditor(params)
+        if not spenderPopup then BuildSpenderPopup() end
+        _spenderGetBarData = params.getBarData
+        _spenderRefreshFn  = params.refreshFn
+        _spenderEntryIdx   = params.entryIdx
+        local ent = CurrentSpenderEntry()
+        if ent and not ent.spenderColors then ent.spenderColors = {} end
+        RefreshSpenderEditor()
+        spenderPopup:ClearAllPoints()
+        spenderPopup:SetPoint("TOP", params.anchor, "BOTTOM", 0, -4)
+        spenderPopup:Show()
+    end
+
     -- Shared per-spec threshold popup builder, used by power and health bar sections.
     -- cfg fields:
     --    parentRgn      -- the DualRow right region to host the button
@@ -6636,6 +6947,45 @@ initFrame:SetScript("OnEvent", function(self)
 				buffToggle:HookScript("OnEnter", function(self) EllesmereUI.ShowWidgetTooltip(self, BUFF_HELP_TIP) end)
 				buffToggle:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
 
+				-- Row: Spender colors (per-entry list). "Spenders" opens the editor, the toggle enables applying them. First castable spell wins; an active tracked buff takes priority.
+				local spenderRow = DRow("Spenders", ROWH)
+				local spendersBtn = CreateFrame("Button", nil, spenderRow)
+				PP.Size(spendersBtn, 60, 22)
+				spendersBtn:SetPoint("RIGHT", spenderRow, "RIGHT", 0, 0)
+				spendersBtn:SetFrameLevel(spenderRow:GetFrameLevel() + 4)
+				local sbBg = spendersBtn:CreateTexture(nil, "BACKGROUND"); sbBg:SetAllPoints()
+				sbBg:SetColorTexture(0.12, 0.12, 0.12, 0.8)
+				spendersBtn._border = EllesmereUI.MakeBorder(spendersBtn, 1, 1, 1, 0.08, PP)
+				local sbLbl = EllesmereUI.MakeFont(spendersBtn, 12, nil, 1, 1, 1)
+				sbLbl:SetAlpha(0.8); sbLbl:SetPoint("CENTER"); sbLbl:SetText(EllesmereUI.L("Spenders"))
+				spendersBtn:SetScript("OnEnter", function(self) sbBg:SetColorTexture(0.16, 0.16, 0.16, 0.9); EllesmereUI.ShowWidgetTooltip(self, SPENDER_HELP_TIP) end)
+				spendersBtn:SetScript("OnLeave", function(self) sbBg:SetColorTexture(0.12, 0.12, 0.12, 0.8); EllesmereUI.HideWidgetTooltip() end)
+				spendersBtn:SetScript("OnClick", function(self)
+					local ent = CurEntry(); if not ent then return end
+					ShowSpenderEditor({
+						getBarData = function() local pp = DB(); return pp and pp.secondary end,
+						refreshFn = function() RefreshClass() end,
+						entryIdx = _selectedIdx, anchor = self,
+					})
+				end)
+				spenderRow._spendersBtn = spendersBtn
+				local spenderToggle, _, spenderSnap = EllesmereUI.BuildToggleControl(
+					spenderRow, DLVL + 4,
+					function() local ent = CurEntry(); return ent and ent.spenderColorEnabled or false end,
+					function(v)
+						local ent = CurEntry(); if not ent then return end
+						ent.spenderColorEnabled = v
+						RefreshClass()
+						if RefreshDetail then RefreshDetail() end
+					end,
+					{ sizeRatio = 0.95 }
+				)
+				spenderToggle:SetPoint("RIGHT", spendersBtn, "LEFT", -10, 0)
+				spenderRow._toggle = spenderToggle
+				spenderRow._snap = spenderSnap
+				spenderToggle:HookScript("OnEnter", function(self) EllesmereUI.ShowWidgetTooltip(self, SPENDER_HELP_TIP) end)
+				spenderToggle:HookScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
 				-- Row: Recolor text instead of bar. Bar-wide section-level field, not per-entry: shown once at the bottom of the pane, only for resources where it applies (continuous bars + Guardian Ironfur)
 				local textInsteadRow = DRow("Recolor Text Instead Of Bar", ROWH)
 				local textInsteadToggle, _, textInsteadSnap = EllesmereUI.BuildToggleControl(
@@ -6813,6 +7163,7 @@ initFrame:SetScript("OnEvent", function(self)
 					if talentDD._refreshLabel then talentDD._refreshLabel() end
 					hashRow._swatchSnap()
 					threshEnableSnap(); threshSwatchSnap(); multiSnap(); buffSnap(); textInsteadSnap(); ceilingSnap()
+					spenderSnap()
 
 					-- Single threshold and multi-band are independent toggles
 					local entEnabled = ent.thresholdEnabled
@@ -6852,6 +7203,7 @@ initFrame:SetScript("OnEvent", function(self)
 					place(threshRow)
 					place(multiRow)
 					place(buffRow)
+					place(spenderRow)
 					-- Bar-wide text-instead toggle always gets a row (no visible effect for pip resources / Ignore Pain, whose render path keeps its own coloring)
 					place(textInsteadRow)
 					if isStagger then place(ceilingRow) end

@@ -10862,7 +10862,12 @@ function EllesmereUI.BuildManagerTile(parentFrame, y, opts)
         delBtn:SetFrameLevel(tile:GetFrameLevel() + 2)
         local delTex = delBtn:CreateTexture(nil, "OVERLAY")
         delTex:SetAllPoints()
-        delTex:SetAtlas("common-icon-delete")
+        -- Forever has no common-icon-delete atlas.
+        if C_Texture.GetAtlasInfo("common-icon-delete") then
+            delTex:SetAtlas("common-icon-delete")
+        else
+            delTex:SetTexture(MEDIA_PATH .. "icons\\eui-close.png")
+        end
         delTex:SetDesaturated(true)
         delTex:SetVertexColor(0.75, 0.75, 0.75)
         delBtn:SetAlpha(0.5)

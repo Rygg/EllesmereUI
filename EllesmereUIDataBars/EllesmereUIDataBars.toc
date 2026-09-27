@@ -16,6 +16,7 @@ Blocks\Clock.lua
 Blocks\Stats.lua
 Blocks\Location.lua
 Blocks\Gold.lua
+Blocks\Bags.lua
 Blocks\XPRep.lua
 Blocks\Travel.lua
 Blocks\Spec.lua

@@ -1143,6 +1143,29 @@ initFrame:SetScript("OnEvent", function(self)
             })
         end
 
+        if not EllesmereUI.IS_FOREVER then
+            local seasonRow
+            seasonRow, h = W:DualRow(parent, y,
+                { type="toggle", text="Season Panel",
+                  tooltip="Show Great Vault and Midnight-season Omnium Folio shortcuts to the right of the socket panel.",
+                  getValue=function() return EllesmereUIDB and EllesmereUIDB.charSheetSeasonPanel == true end,
+                  setValue=function(v)
+                      if not EllesmereUIDB then EllesmereUIDB = {} end
+                      EllesmereUIDB.charSheetSeasonPanel = v
+                      if EllesmereUI._refreshCharSheetSocketPanel then EllesmereUI._refreshCharSheetSocketPanel() end
+                  end },
+                { type="toggle", text="Hide Slot Flyout Arrows",
+                  tooltip="Hide the arrows beside equipment slots on the Equipment tab. The slot flyouts remain usable.",
+                  getValue=function() return EllesmereUIDB and EllesmereUIDB.charSheetHideSlotFlyoutArrows == true end,
+                  setValue=function(v)
+                      if not EllesmereUIDB then EllesmereUIDB = {} end
+                      EllesmereUIDB.charSheetHideSlotFlyoutArrows = v
+                      if EllesmereUI._refreshCharSheetSlotFlyoutArrows then EllesmereUI._refreshCharSheetSlotFlyoutArrows() end
+                  end }
+            );  y = y - h
+            AttachDisabledOverlay(seasonRow)
+        end
+
         _, h = W:Spacer(parent, y, 10);  y = y - h
 
         ---------------------------------------------------------------------------
@@ -3300,6 +3323,8 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.lfgSavedRoles = nil
                 EllesmereUIDB.showMythicRating = nil
                 EllesmereUIDB.showPvpItemLevel = nil
+                EllesmereUIDB.charSheetSeasonPanel = nil
+                EllesmereUIDB.charSheetHideSlotFlyoutArrows = nil
                 EllesmereUIDB.flyoutItemLevels = nil
                 EllesmereUIDB.showCharSheetDurability = nil
                 EllesmereUIDB.charSheetDurabilityLocation = nil
@@ -3329,6 +3354,8 @@ initFrame:SetScript("OnEvent", function(self)
             if EllesmereUI._applyTooltipCursorAnchor then EllesmereUI._applyTooltipCursorAnchor() end
             if EllesmereUI._applyTooltipFixedAnchor then EllesmereUI._applyTooltipFixedAnchor() end
             if EllesmereUI._applyTooltipHealthStrip then EllesmereUI._applyTooltipHealthStrip() end
+            if EllesmereUI._refreshCharSheetSocketPanel then EllesmereUI._refreshCharSheetSocketPanel() end
+            if EllesmereUI._refreshCharSheetSlotFlyoutArrows then EllesmereUI._refreshCharSheetSlotFlyoutArrows() end
         end,
     })
 

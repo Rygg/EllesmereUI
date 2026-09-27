@@ -1180,6 +1180,9 @@ local function HideMinimapChild(btn)
                 -- visible in our grid and a later Hide() would mark it unwanted.
                 if not (flyoutPanel and flyoutPanel:IsShown()) then
                     _addonVisible[self] = true
+                    -- The grid is cached across opens; a wanted-state change must rebuild
+                    -- it, or the button stays an alpha-0 gap in the old layout.
+                    InvalidateFlyout()
                 end
             end
             if InCombatLockdown() then return end
@@ -1201,6 +1204,7 @@ local function HideMinimapChild(btn)
                     return
                 end
                 _addonVisible[self] = false
+                InvalidateFlyout()
             end
         end)
         addonButtonHooks[btn] = true

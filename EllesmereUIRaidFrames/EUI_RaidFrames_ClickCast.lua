@@ -2552,7 +2552,12 @@ function ns.CC_BuildPage(pageName, parent, yOffset)
             delBtn:SetFrameLevel(tile:GetFrameLevel() + 2)
             local delTex = delBtn:CreateTexture(nil, "ARTWORK")
             delTex:SetAllPoints()
-            delTex:SetAtlas("common-icon-delete")
+            -- Forever has no common-icon-delete atlas.
+            if C_Texture.GetAtlasInfo("common-icon-delete") then
+                delTex:SetAtlas("common-icon-delete")
+            else
+                delTex:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\icons\\eui-close.png")
+            end
             delTex:SetDesaturated(true)
             delTex:SetVertexColor(0.75, 0.75, 0.75)
             delTex:SetAlpha(0.5)

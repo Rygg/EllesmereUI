@@ -2013,7 +2013,8 @@ do
         -- Character Sheet card
         "statCategoryColors", "statCategoryUseColor", "statSectionsOrder",
         "showMythicRating", "showItemLevel", "showUpgradeTrack", "showGems",
-        "showEnchants", "showPvpItemLevel", "charSheetSocketPanel",
+        "showEnchants", "showPvpItemLevel", "charSheetSocketPanel", "charSheetSeasonPanel",
+        "charSheetHideSlotFlyoutArrows",
         "charSheetIconZoom", "charSheetEnchantNames", "charSheetEnchantSize",
         "flyoutItemLevels", "showCharSheetDurability", "charSheetDurabilityLocation",
         "charSheetDurabilityShowLabel", "showSecondaryRaw", "showSecondaryBoth",

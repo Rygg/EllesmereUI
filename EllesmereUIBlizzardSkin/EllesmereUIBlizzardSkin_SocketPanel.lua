@@ -72,6 +72,7 @@ local relevantItems = {}  -- itemID -> true for equipped socketed items + their 
 local gemRows   = {}      -- pooled flyout rows
 local pending   = nil     -- in-flight socket action
 local panel               -- the panel frame
+local seasonPanel         -- optional vault / Midnight folio shortcuts
 local flyout              -- the gem flyout frame
 local catcher             -- full-screen click-catcher behind the flyout
 local evtFrame            -- our event frame
@@ -457,11 +458,9 @@ local function StartSlotGlow(slotID)
     G.StartGlow(slotGlow, 6, w, 1, 1, 1, nil, h)
 end
 
-local function AcquireIcon(i)
-    local btn = iconPool[i]
-    if btn then return btn end
-
-    btn = CreateFrame("Button", nil, panel)
+-- Both bottom strips share the socket icon's size, border and hover treatment.
+local function CreatePanelIcon(parent)
+    local btn = CreateFrame("Button", nil, parent)
     btn:SetSize(SIZE, SIZE)
 
     local icon = btn:CreateTexture(nil, "ARTWORK")
@@ -493,6 +492,14 @@ local function AcquireIcon(i)
         hov:SetAllPoints(btn)
         hov:SetColorTexture(1, 1, 1, 0.1)
     end
+
+    return btn
+end
+
+local function AcquireIcon(i)
+    local btn = iconPool[i]
+    if btn then return btn end
+    btn = CreatePanelIcon(panel)
 
     btn:SetScript("OnEnter", function(self)
         local rec = self.euiSock
@@ -693,6 +700,18 @@ end
 LayoutSockets = function()
     if not panel then return end
 
+    panel:ClearAllPoints()
+    if seasonPanel and seasonPanel:IsShown() then
+        local gap = STOCK and 12 or PAD -- stock tab art overhangs both plates
+        panel:SetPoint(STOCK and "TOPRIGHT" or "BOTTOMRIGHT", seasonPanel,
+            STOCK and "TOPLEFT" or "BOTTOMLEFT", -gap, 0)
+    elseif STOCK then
+        panel:SetPoint("TOPRIGHT", CharacterFrame, "BOTTOMRIGHT", -15, 2)
+    else
+        panel:SetPoint("BOTTOMRIGHT", CharacterFrame, "BOTTOMRIGHT", -10, 6)
+    end
+
+    -- Season shortcuts only move the strip; its original capacity is unchanged.
     local count = #sockets
     local paged = count > MAX_SOCKET_ICONS
     -- Reserve one icon's width for the arrows. On the EllesmereUI look that
@@ -1124,14 +1143,12 @@ end
 --  Build + lifecycle
 --------------------------------------------------------------------------------
 
-local function BuildPanel()
-    if built then return end
-
+local function CreatePanelFrame(name)
     -- EllesmereUI look: a bare row of icons in the blank strip along the
     -- sheet's bottom edge, right-aligned, no header or backdrop. Anchoring to
     -- CharacterFrame directly (not a skin frame) means the panel builds fine
     -- on the very first open after login, before the skin's lazy layout runs.
-    panel = CreateFrame("Frame", "EUI_CharSheet_SocketPanel", CharacterFrame)
+    local panel = CreateFrame("Frame", name, CharacterFrame)
     panel:ClearAllPoints()
     if STOCK then
         -- Stock styles: hung below the sheet's bottom-right corner, mirroring
@@ -1177,6 +1194,128 @@ local function BuildPanel()
         panel:SetFrameLevel(55)
     end
 
+    return panel
+end
+
+--------------------------------------------------------------------------------
+--  Optional season shortcuts (no frames or events until first enabled show)
+--------------------------------------------------------------------------------
+
+local function IsMidnightSeason()
+    -- The display season can belong to a different expansion than the client
+    -- or the player's account. Unknown season data must not expose the folio.
+    return C_SeasonInfo and C_SeasonInfo.GetCurrentDisplaySeasonExpansion
+        and LE_EXPANSION_MIDNIGHT ~= nil
+        and C_SeasonInfo.GetCurrentDisplaySeasonExpansion() == LE_EXPANSION_MIDNIGHT
+end
+
+local function FolioUnlocked()
+    return C_PlayerInfo and C_PlayerInfo.IsExpansionLandingPageUnlockedForPlayer
+        and C_PlayerInfo.IsExpansionLandingPageUnlockedForPlayer(LE_EXPANSION_MIDNIGHT)
+end
+
+local function OpenSeasonShortcut(self)
+    if InCombatLockdown() then
+        if UIErrorsFrame then
+            UIErrorsFrame:AddMessage(_G.ERR_NOT_IN_COMBAT or "Can't do that in combat.", 1, 0.1, 0.1)
+        end
+        return
+    end
+    if self.isFolio then
+        if not IsMidnightSeason() or not FolioUnlocked() then return end
+        local page = _G.ExpansionLandingPage
+        if page and ToggleExpansionLandingPage then
+            -- Use the landing page directly; a minimap replacement may leave
+            -- Blizzard's minimap button pointing at an older expansion.
+            if not page:IsShown() then page:RefreshExpansionOverlay() end
+            ToggleExpansionLandingPage()
+        end
+    elseif WeeklyRewards_ShowUI then
+        WeeklyRewards_ShowUI()
+    end
+end
+
+local function CreateSeasonIcon(isFolio)
+    local btn = CreatePanelIcon(seasonPanel)
+    btn.isFolio = isFolio
+    if isFolio then
+        btn.icon:SetAtlas("midnight-landingbutton-up")
+    else
+        -- Thalassian Token of Merit, shared by Midnight seasons 1 and 2.
+        btn.icon:SetTexture("Interface\\Icons\\INV_Misc_AzsharaCoin2")
+    end
+    if STOCK then
+        btn.qualityBorder:SetVertexColor(0.75, 0.75, 0.75, 1)
+        btn.qualityBorder:Show()
+    elseif PP and PP.SetBorderColor then
+        PP.SetBorderColor(btn, GemBorderColor(2))
+    end
+    btn:RegisterForClicks("LeftButtonUp")
+    btn:SetScript("OnClick", OpenSeasonShortcut)
+    btn:SetScript("OnEnter", function(self)
+        self.tooltipShown = true
+        local text = self.isFolio and EllesmereUI.L("Omnium Folio") or EllesmereUI.L("Great Vault")
+        if self.isFolio and not FolioUnlocked() then
+            text = text .. "\n" .. EllesmereUI.L("Unlock the Omnium Folio to use this shortcut.")
+        end
+        EllesmereUI.ShowWidgetTooltip(self, text, { anchor = "right" })
+    end)
+    local function HideTooltip(self)
+        if self.tooltipShown then
+            self.tooltipShown = nil
+            EllesmereUI.HideWidgetTooltip()
+        end
+    end
+    btn:SetScript("OnLeave", HideTooltip)
+    btn:SetScript("OnHide", HideTooltip)
+    return btn
+end
+
+local RefreshSeasonPanel
+RefreshSeasonPanel = function()
+    local enabled = EllesmereUIDB and EllesmereUIDB.charSheetSeasonPanel == true
+        and EllesmereUIDB.themedCharacterSheet ~= false
+        and not EllesmereUI.BlizzWindowSkinsKilled()
+    if not enabled or not (PaperDollFrame and PaperDollFrame:IsVisible()) then
+        if seasonPanel then seasonPanel:Hide() end
+        return
+    end
+    if not seasonPanel then
+        seasonPanel = CreatePanelFrame("EUI_CharSheet_SeasonPanel")
+        seasonPanel.vault = CreateSeasonIcon(false)
+        seasonPanel.vault:SetPoint("LEFT", seasonPanel, "LEFT", EDGE_X, ICON_Y)
+        seasonPanel:SetScript("OnHide", function(self) self:UnregisterAllEvents() end)
+        seasonPanel:SetScript("OnEvent", function()
+            local oldWidth = seasonPanel:GetWidth()
+            RefreshSeasonPanel()
+            if seasonPanel:GetWidth() ~= oldWidth then
+                if panel and panel:IsShown() then LayoutSockets() end
+                if not STOCK and EllesmereUI._updateCharSheetDurability then
+                    EllesmereUI._updateCharSheetDurability()
+                end
+            end
+        end)
+    end
+    local midnight = IsMidnightSeason()
+    if midnight and not seasonPanel.folio then
+        seasonPanel.folio = CreateSeasonIcon(true)
+        seasonPanel.folio:SetPoint("LEFT", seasonPanel.vault, "RIGHT", PAD, 0)
+    end
+    if seasonPanel.folio then
+        seasonPanel.folio:SetShown(midnight and true or false)
+        if midnight then seasonPanel.folio:SetAlpha(FolioUnlocked() and 1 or 0.4) end
+    end
+    seasonPanel:SetWidth(math.max(MIN_W, 2 * EDGE_X + SIZE + (midnight and (SIZE + PAD) or 0)))
+    seasonPanel:Show()
+    seasonPanel:RegisterEvent("QUEST_LOG_UPDATE")
+    seasonPanel:RegisterEvent("PLAYER_ENTERING_WORLD")
+    seasonPanel:RegisterEvent("MYTHIC_PLUS_CURRENT_AFFIX_UPDATE")
+end
+
+local function BuildPanel()
+    if built then return end
+    panel = CreatePanelFrame("EUI_CharSheet_SocketPanel")
+
     if not evtFrame then
         evtFrame = CreateFrame("Frame")
         evtFrame:SetScript("OnEvent", OnEvent)
@@ -1192,9 +1331,13 @@ local function BuildPanel()
 end
 
 local function OnPaperDollShow()
+    RefreshSeasonPanel()
     if EllesmereUIDB and (EllesmereUIDB.themedCharacterSheet == false or EllesmereUI.BlizzWindowSkinsKilled()) then return end
     if EllesmereUIDB and EllesmereUIDB.charSheetSocketPanel == false then
         if panel then panel:Hide() end
+        if not STOCK and EllesmereUI._updateCharSheetDurability then
+            EllesmereUI._updateCharSheetDurability()
+        end
         return
     end
     if not built then BuildPanel() end
@@ -1216,16 +1359,21 @@ local function OnHideAll()
     CloseFlyout()
     UnregisterShownEvents()
     if panel then panel:Hide() end
+    if seasonPanel then seasonPanel:Hide() end
 end
 
 -- Live apply from the options toggle (no reload).
 local function RefreshFromOptions()
+    RefreshSeasonPanel()
     if not (PaperDollFrame and PaperDollFrame:IsShown()) then return end
     if EllesmereUIDB and (EllesmereUIDB.themedCharacterSheet == false or EllesmereUI.BlizzWindowSkinsKilled()) then return end
     if EllesmereUIDB and EllesmereUIDB.charSheetSocketPanel == false then
         CloseFlyout()
         UnregisterShownEvents()
         if panel then panel:Hide() end
+        if not STOCK and EllesmereUI._updateCharSheetDurability then
+            EllesmereUI._updateCharSheetDurability()
+        end
     else
         if not built then BuildPanel() end
         if panel then

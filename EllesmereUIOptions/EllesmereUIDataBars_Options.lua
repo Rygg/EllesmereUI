@@ -75,6 +75,7 @@ initFrame:SetScript("OnEvent", function(self)
         profession = 120, travel = 40, micromenu = 340, currency = 90, spacer = 40,
         durability = 70, combat = 105, profession2 = 120, greatvault = 100,
         location = 140, coords = 70, crests = 160, ilvl = 70,
+        bags = 50,
     }
 
     ---------------------------------------------------------------------------
@@ -2446,7 +2447,7 @@ initFrame:SetScript("OnEvent", function(self)
                 durability = true, gold = true, travel = true, spec = true,
                 profession = true, profession2 = true, currency = true,
                 greatvault = true, audio = true, location = true, coords = true,
-                ilvl = true,
+                ilvl = true, bags = true,
                 ldb = true,
             }
             if ICON_COLOR_BLOCKS[b.type] then
@@ -2610,6 +2611,9 @@ initFrame:SetScript("OnEvent", function(self)
                 elseif b.type == "coords" then
                     iconRowRight = MkToggleOn("Show Icon", "showIcon",
                         "Shows the marker icon next to the coordinates.")
+                elseif b.type == "bags" then
+                    iconRowRight = MkToggleOn("Show Icon", "showIcon",
+                        "Shows the bag icon next to the slot count.")
                 end
                 if b.type == "durability" then
                     iconRowRight = { type = "toggle", text = "Show Icon",
@@ -3022,6 +3026,29 @@ initFrame:SetScript("OnEvent", function(self)
                           Apply()
                       end },
                 }
+            elseif b.type == "bags" then
+                -- Show Icon rides the Icon Color row's right slot above.
+                typeRows = {
+                    { type = "dropdown", text = "Display",
+                      tooltip = "Which slot count the block shows.",
+                      values = { free = "Free", used = "Used",
+                                 freeTotal = "Free / Total", usedTotal = "Used / Total" },
+                      order = { "free", "used", "freeTotal", "usedTotal" },
+                      getValue = function() return s.value or "free" end,
+                      setValue = function(v) s.value = v; Apply() end },
+                    MkToggle("Include Reagent Bag", "reagent", "Counts the reagent bag's slots along with your regular bags."),
+                    -- Inline color swatch built after the row loop (bagsLowRow).
+                    { type = "slider", text = "Low Space Warning", min = 0, max = 50, step = 1,
+                      tooltip = "Colors the number when free slots drop below this many; the swatch picks the color. Zero turns it off.",
+                      getValue = function() return s.lowThreshold or 0 end,
+                      setValue = function(v)
+                          local wasOn = (s.lowThreshold or 0) > 0
+                          s.lowThreshold = v
+                          Apply()
+                          -- Swatch enable state flips only when crossing zero.
+                          if wasOn ~= (v > 0) then EllesmereUI:RefreshPage() end
+                      end },
+                }
             elseif b.type == "ilvl" then
                 -- Prefix rides the Icon Color row's right slot above.
                 typeRows = {
@@ -3094,6 +3121,7 @@ initFrame:SetScript("OnEvent", function(self)
             local msIconRow
             local goldTipRow
             local crestListRow
+            local bagsLowRow
             for k = 1, #typeRows, 2 do
                 local rightCfg = typeRows[k + 1]
                 if not rightCfg then rightCfg = { type = "label", text = "" } end
@@ -3106,6 +3134,8 @@ initFrame:SetScript("OnEvent", function(self)
                 -- Crests: the Crests Shown checklist heads the type rows, so
                 -- its placeholder is this row's LEFT slot.
                 if b.type == "crests" and k == 1 then crestListRow = row end
+                -- Bags: Low Space Warning heads the second row (left slot).
+                if b.type == "bags" and k == 3 then bagsLowRow = row end
                 -- Deep-link target for an unconfigured currency block: clicking
                 -- its "Select a currency" placeholder on the live bar lands on
                 -- the picker itself, not just the section (ns.OpenBlockSettings).
@@ -3242,6 +3272,44 @@ initFrame:SetScript("OnEvent", function(self)
                     UpdateState()
                 end
                 rgn._lastInline = anchor
+            end
+
+            -- Bags low space color: inline on the threshold slider, disabled
+            -- (house pattern) while the threshold is zero.
+            if bagsLowRow then
+                local rgn = bagsLowRow._leftRegion
+                local swatch, updateSwatch = EllesmereUI.BuildColorSwatch(
+                    rgn, bagsLowRow:GetFrameLevel() + 3,
+                    function()
+                        local d = ns.BAGS_LOW_COLOR
+                        local c = s.lowColor
+                        if c then return c.r or d[1], c.g or d[2], c.b or d[3] end
+                        return d[1], d[2], d[3]
+                    end,
+                    function(r, g, bl)
+                        s.lowColor = { r = r, g = g, b = bl }
+                        Apply()
+                    end,
+                    false, 20)
+                PP.Point(swatch, "RIGHT", rgn._control, "LEFT", -8, 0)
+                local blk = CreateFrame("Frame", nil, swatch)
+                blk:SetAllPoints()
+                blk:SetFrameLevel(swatch:GetFrameLevel() + 5)
+                blk:EnableMouse(true)
+                blk:SetScript("OnEnter", function()
+                    EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip("Low Space Warning"))
+                end)
+                blk:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+                local function UpdateState()
+                    if (s.lowThreshold or 0) > 0 then
+                        swatch:SetAlpha(1); blk:Hide()
+                    else
+                        swatch:SetAlpha(0.3); blk:Show()
+                    end
+                end
+                EllesmereUI.RegisterWidgetRefresh(function() updateSwatch(); UpdateState() end)
+                UpdateState()
+                rgn._lastInline = swatch
             end
 
             if b.type == "gold" and goldTipRow then

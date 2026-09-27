@@ -4809,6 +4809,41 @@ local function SecondaryTracksBuff(sp)
     return (e and e.buffColorEnabled and e.buffColors and #e.buffColors > 0) and true or false
 end
 
+-- Spender coloring for the class-resource bar: the FIRST spell in the list that is
+-- currently castable wins. IsSpellUsable reports resource/range/known, not cooldown,
+-- so a spell that is free under some condition (Devourer's Void Ray during Void
+-- Metamorphosis) would read usable for its whole cooldown: skip spells on a real
+-- cooldown. isOnGCD excludes the shared GCD. The cooldown fields can be secret in
+-- combat (see the GCD bar), so a secret read skips the cooldown test instead. A
+-- client that omits either field skips it too.
+local function ActiveSpenderColor(entry)
+    if not entry or not entry.spenderColorEnabled then return nil end
+    local list = entry.spenderColors
+    if not list or not C_Spell then return nil end
+    local usable, getCD = C_Spell.IsSpellUsable, C_Spell.GetSpellCooldown
+    if not usable then return nil end
+    for i = 1, #list do
+        local e = list[i]
+        local id = e.spellID
+        if id and usable(id) then
+            local cd = getCD and getCD(id)
+            local act, gcd = cd and cd.isActive, cd and cd.isOnGCD
+            local onCD = false
+            if act ~= nil and gcd ~= nil and not (issecretvalue and (issecretvalue(act) or issecretvalue(gcd))) then
+                onCD = act and not gcd
+            end
+            if not onCD then return e.r, e.g, e.b, e.a end
+        end
+    end
+    return nil
+end
+-- True when the current spec's resolved threshold entry tracks any spender.
+local function SecondaryTracksSpender(sp)
+    if not sp then return false end
+    local e = ResolveThresholdSpecEntry(sp)
+    return (e and e.spenderColorEnabled and e.spenderColors and #e.spenderColors > 0) and true or false
+end
+
 -- Per-frame render for the Guardian Ironfur bar: prune expired ticks, position
 -- the moving hash lines (right -> left as each cast decays), and drive the fill
 -- to the longest-remaining fraction.
@@ -4899,6 +4934,8 @@ local function UpdateIronfurBar()
     -- Buff coloring wins: a tracked buff on this entry overrides the base color and
     -- suppresses the stack-count threshold/bands below.
     local _bfr, _bfg, _bfb, _bfa = ActiveBuffColor(tsEntry)
+    -- No tracked buff active: a castable spender supplies the override color instead.
+    if not _bfr then _bfr, _bfg, _bfb, _bfa = ActiveSpenderColor(tsEntry) end
     local _buffActive = _bfr ~= nil
     if _buffActive and not _tiWanted then r, g, b, a = _bfr or r, _bfg or g, _bfb or b, _bfa or a end
     -- Ironfur colors by active stack count, NOT the bar's duration fraction, so
@@ -5212,7 +5249,16 @@ local function UpdateSecondaryResource()
                 stb.gen = ns.CfgGen
                 stb.v = SecondaryTracksBuff(_G._ERB_ResolveSecondaryCfg()) and true or false
             end
-            if not stb.v then
+            -- Spender coloring changes with spell usability while the value stands
+            -- still, so tracked spenders skip the early-out too. Kept apart from stb,
+            -- which also arms the poll ticker.
+            local sts = ns.STS
+            if not sts or sts.gen ~= ns.CfgGen then
+                if not sts then sts = {}; ns.STS = sts end
+                sts.gen = ns.CfgGen
+                sts.v = SecondaryTracksSpender(_G._ERB_ResolveSecondaryCfg()) and true or false
+            end
+            if not stb.v and not sts.v then
                 local st = ns.SecSt
                 -- Essence recharge exemption: the partial pip refills over several
                 -- seconds while UnitPower reads the SAME count, so an in-flight
@@ -5305,6 +5351,8 @@ local function UpdateSecondaryResource()
     -- text instead" on, the buff colors the count TEXT (done at the end of this
     -- function) and fill/pips stay at their base color.
     local _bfr, _bfg, _bfb, _bfa = ActiveBuffColor(_buffEntry)
+    -- No tracked buff active: a castable spender supplies the override color instead.
+    if not _bfr then _bfr, _bfg, _bfb, _bfa = ActiveSpenderColor(_buffEntry) end
     local _buffActive = _bfr ~= nil
     if _buffActive then
         if not _spTextInstead then
@@ -6754,6 +6802,28 @@ function ns.ArmTick()
     if cachedPrimary == "EBON_MIGHT" and not ns.EMB121_Owns
        and _ebonMightExpiry > GetTime() then
         ns.EMTick.Start()
+    end
+    -- Spender coloring is event-driven: SPELL_UPDATE_USABLE / SPELL_UPDATE_COOLDOWN
+    -- are registered on the addon's own event frame only while the current entry
+    -- tracks spenders and the pips are ours to paint, and unregistered once
+    -- spenders no longer apply. ns.STS is the same cache the value early-out in
+    -- UpdateSecondaryResource reads.
+    local sts = ns.STS
+    if not sts or sts.gen ~= ns.CfgGen then
+        if not sts then sts = {}; ns.STS = sts end
+        sts.gen = ns.CfgGen
+        sts.v = SecondaryTracksSpender(_G._ERB_ResolveSecondaryCfg()) and true or false
+    end
+    local wantSpender = (sts.v and cs and not ns._erbArtOn) and true or false
+    if wantSpender ~= (ns._spenderEvents or false) then
+        if wantSpender then
+            ERB:RegisterEvent("SPELL_UPDATE_USABLE", UpdateSecondaryResource)
+            ERB:RegisterEvent("SPELL_UPDATE_COOLDOWN", UpdateSecondaryResource)
+        else
+            ERB:UnregisterEvent("SPELL_UPDATE_USABLE")
+            ERB:UnregisterEvent("SPELL_UPDATE_COOLDOWN")
+        end
+        ns._spenderEvents = wantSpender
     end
 end
 

@@ -1040,7 +1040,8 @@ local friendlyFrameCache = CreateFramePool("Frame", UIParent, nil, nil, false, f
     plate.health = CreateFrame("StatusBar", nil, plate)
     plate.health:SetFrameLevel(10)
     -- WoW Forever: shifted left so the bar and its level box centre on the unit.
-    plate.health:SetPoint("CENTER", -ns.NP_ForeverNameDX(plate), FRIENDLY_PLATE_Y_OFFSET)
+    plate._hx, plate._hy = -ns.NP_ForeverNameDX(plate), FRIENDLY_PLATE_Y_OFFSET
+    plate.health:SetPoint("CENTER", plate._hx, plate._hy)
     plate.health:SetSize(GetFriendlyHealthBarWidth(), GetFriendlyHealthBarHeight())
     plate.health:SetStatusBarTexture("Interface\\Buttons\\WHITE8x8")
 

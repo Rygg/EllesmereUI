@@ -1648,9 +1648,9 @@ end
 -- height offset, then the enemy plate's name pass, or the friendly plate's
 -- name anchor, runs.
 function ns.NP_ForeverNameReseat(plate)
-    local health = plate.health
-    local _, _, _, _, y = health:GetPoint(1)
-    health:SetPoint("CENTER", plate, "CENTER", -ns.NP_ForeverNameDX(plate), y or 0)
+    local x = -ns.NP_ForeverNameDX(plate)
+    plate._hx = x
+    plate.health:SetPoint("CENTER", plate, "CENTER", x, plate._hy or 0)
     if plate.RefreshNamePosition then
         plate:RefreshNamePosition(true)
     elseif plate.UpdateSubText then
@@ -1662,8 +1662,7 @@ end
 -- for the other state moves (a friendly plate keeps the seat it was built
 -- with; an enemy plate's appearance pass has already re-seated it).
 function ns.NP_ForeverSyncSeat(plate)
-    local _, _, _, x = plate.health:GetPoint(1)
-    if x ~= -ns.NP_ForeverNameDX(plate) then ns.NP_ForeverNameReseat(plate) end
+    if plate._hx ~= -ns.NP_ForeverNameDX(plate) then ns.NP_ForeverNameReseat(plate) end
 end
 -- Every enemy plate's box, for a change in the player's own level or
 -- faction (only attackable units are colour-ranked, and the friendly plates
@@ -4006,7 +4005,8 @@ local frameCache = CreateFramePool("Frame", UIParent, nil, nil, false, function(
     plate:SetFlattensRenderLayers(true)
     plate.health = CreateFrame("StatusBar", nil, plate)
     plate.health:SetFrameLevel(10)
-    plate.health:SetPoint("CENTER", plate, "CENTER", 0, GetNameplateYOffset())
+    plate._hx, plate._hy = 0, GetNameplateYOffset()
+    plate.health:SetPoint("CENTER", plate, "CENTER", 0, plate._hy)
     plate.health:SetSize(GetHealthBarWidth(), GetHealthBarHeight())
     plate.health:SetStatusBarTexture("Interface\\Buttons\\WHITE8x8")
     plate.health:SetClipsChildren(false)
@@ -7338,7 +7338,8 @@ function NameplateFrame:ApplyAppearance()
     local castH = GetCastBarHeight()
     self.health:ClearAllPoints()
     -- WoW Forever: shifted left so the bar and its level box centre on the unit.
-    self.health:SetPoint("CENTER", self, "CENTER", -ns.NP_ForeverNameDX(self), GetNameplateYOffset())
+    self._hx, self._hy = -ns.NP_ForeverNameDX(self), GetNameplateYOffset()
+    self.health:SetPoint("CENTER", self, "CENTER", self._hx, self._hy)
     self.health:SetSize(GetHealthBarWidth(), GetHealthBarHeight())
     self.absorb:SetSize(GetHealthBarWidth(), GetHealthBarHeight())
     -- (Classic WoW UI seats its health border from self:ApplyBorder below,

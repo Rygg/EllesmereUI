@@ -1141,6 +1141,14 @@ local function UpdateAllTabs()
 end
 WSkin.UpdateAllTabs = UpdateAllTabs
 
+-- Visual selection only; nil returns to the native tab system's selection.
+-- Keep the override outside the frame so Blizzard's tab state stays untouched.
+function WSkin.SetTabSelection(tab, selected)
+    if not tab or tab:IsForbidden() then return end
+    GetFFD(tab).selOverride = selected
+    UpdateTabVisual(tab)
+end
+
 local _tabHooked = false
 local function EnsureTabHooks()
     if _tabHooked then return end

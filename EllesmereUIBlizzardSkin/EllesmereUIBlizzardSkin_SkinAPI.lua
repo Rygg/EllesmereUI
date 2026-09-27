@@ -54,7 +54,7 @@ local PASS = {
     "Panel", "Inset", "FadeRegions", "FadeNineSlice",
     -- Widgets
     "Button", "WhiteButtonLabel", "StateButtonLabel", "EditBox", "Checkbox", "Dropdown",
-    "ScrollBar", "Tab", "CloseButton", "PageButton", "SquareIcon",
+    "ScrollBar", "Tab", "SetTabSelection", "CloseButton", "PageButton", "SquareIcon",
     "SortHeaderBar",
     -- Text / bars
     "Font", "White", "ApplyBarFill",
