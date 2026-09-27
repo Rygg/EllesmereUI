@@ -268,6 +268,7 @@ local function RenderTooltip()
     local ar, ag, ab = GetAccentColor()
     ns.Tip_AddLine(" ")
     ns.Tip_AddDouble("Left Click:", "Open Mythic+ Menu", 1, 1, 1, ar, ag, ab)
+    ns.Tip_AddDouble("Right Click:", "Open Group Finder", 1, 1, 1, ar, ag, ab)
     ns.Tip_Show()
 end
 
@@ -289,6 +290,17 @@ local function OpenMythicPlusMenu()
     if PVEFrame_ToggleFrame then pcall(PVEFrame_ToggleFrame, "ChallengesFrame") end
 end
 
+local function OpenPremadeGroups()
+    if InCombatLockdown() or not C_AddOns then return end
+    if not C_AddOns.IsAddOnLoaded("Blizzard_GroupFinder") then
+        local ok, loaded = pcall(C_AddOns.LoadAddOn, "Blizzard_GroupFinder")
+        if not ok or not loaded then return end
+    end
+    -- Driving PVEFrame_ToggleFrame directly leaves LFGListFrame's content empty;
+    -- clicking the real micro button runs Blizzard's own setup, same as the micro menu block.
+    if _G.LFDMicroButton and _G.LFDMicroButton.Click then pcall(_G.LFDMicroButton.Click, _G.LFDMicroButton) end
+end
+
 local function RefreshScore()
     if not dataObject then return end
     local score = GetScore()
@@ -299,8 +311,12 @@ local function RefreshScore()
     dataObject.text = "|cff" .. GetColorHex(GetScoreColor(score)) .. tostring(score) .. "|r"
 end
 
-local function OnLDBClick(_, mouseButton)
-    if mouseButton == "LeftButton" then OpenMythicPlusMenu() end
+local function OnClick(_, mouseButton)
+    if mouseButton == "LeftButton" then
+        OpenMythicPlusMenu()
+    elseif mouseButton == "RightButton" then
+        OpenPremadeGroups()
+    end
 end
 
 local objectOK, registeredObject = pcall(LDB.NewDataObject, LDB, "EllesmereUI Mythic+ Rating", {
@@ -309,7 +325,7 @@ local objectOK, registeredObject = pcall(LDB.NewDataObject, LDB, "EllesmereUI My
     text = "-",
     OnEnter = ShowTooltip,
     OnLeave = HideTooltip,
-    OnClick = OnLDBClick,
+    OnClick = OnClick,
 })
 if not objectOK or type(registeredObject) ~= "table" then return end
 dataObject = registeredObject
