@@ -267,8 +267,8 @@ local function RenderTooltip()
 
     local ar, ag, ab = GetAccentColor()
     ns.Tip_AddLine(" ")
-    ns.Tip_AddDouble("Left Click:", "Open Mythic+ Menu", 1, 1, 1, ar, ag, ab)
-    ns.Tip_AddDouble("Right Click:", "Open Group Finder", 1, 1, 1, ar, ag, ab)
+    ns.Tip_AddDouble("Left Click:", "Open Mythic+ Dungeons", 1, 1, 1, ar, ag, ab)
+    ns.Tip_AddDouble("Right Click:", "Open Dungeons & Raids", 1, 1, 1, ar, ag, ab)
     ns.Tip_Show()
 end
 
@@ -281,7 +281,7 @@ local function HideTooltip(frame)
     ns.Tip_HideUnlessInteractive(frame)
 end
 
-local function OpenMythicPlusMenu()
+local function OpenMythicPlusDungeons()
     if InCombatLockdown() or not C_AddOns then return end
     if not C_AddOns.IsAddOnLoaded("Blizzard_GroupFinder") then
         local ok, loaded = pcall(C_AddOns.LoadAddOn, "Blizzard_GroupFinder")
@@ -290,15 +290,14 @@ local function OpenMythicPlusMenu()
     if PVEFrame_ToggleFrame then pcall(PVEFrame_ToggleFrame, "ChallengesFrame") end
 end
 
-local function OpenPremadeGroups()
+local function OpenDungeonsAndRaids()
     if InCombatLockdown() or not C_AddOns then return end
     if not C_AddOns.IsAddOnLoaded("Blizzard_GroupFinder") then
         local ok, loaded = pcall(C_AddOns.LoadAddOn, "Blizzard_GroupFinder")
         if not ok or not loaded then return end
     end
-    -- Driving PVEFrame_ToggleFrame directly leaves LFGListFrame's content empty;
-    -- clicking the real micro button runs Blizzard's own setup, same as the micro menu block.
-    if _G.LFDMicroButton and _G.LFDMicroButton.Click then pcall(_G.LFDMicroButton.Click, _G.LFDMicroButton) end
+    -- Explicit sidePanelName/selection so this switches tabs instead of just hiding an already-open PVEFrame.
+    if PVEFrame_ToggleFrame then pcall(PVEFrame_ToggleFrame, "GroupFinderFrame", _G.LFDParentFrame) end
 end
 
 local function RefreshScore()
@@ -313,9 +312,9 @@ end
 
 local function OnClick(_, mouseButton)
     if mouseButton == "LeftButton" then
-        OpenMythicPlusMenu()
+        OpenMythicPlusDungeons()
     elseif mouseButton == "RightButton" then
-        OpenPremadeGroups()
+        OpenDungeonsAndRaids()
     end
 end
 
