@@ -1,13 +1,14 @@
 ## Interface: 120000, 120001, 120005, 120007, 120100, 16001
 ## Title: |cff0cd29fEllesmereUI|r Custom Data Bar Blocks
 ## Category: |cff0cd29fEllesmere|rUI
-## Notes: Container for custom/experimental LibDataBroker blocks.
+## Notes: Separately updateable custom DataBars blocks.
 ## Group: EllesmereUI
 ## Author: Ellesmere
 ## Version: 1.0.0
-## Dependencies: EllesmereUI
+# Hard dependency: custom blocks register through DataBars' internal registries.
+## Dependencies: EllesmereUI, EllesmereUIDataBars
 ## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
-EllesmereUIDataBars_TipKit_Duplicate.lua
 EllesmereUICustomDataBarBlocks.lua
+Sources\DataBarsExtensions.lua
 Sources\MythicPlusRating.lua

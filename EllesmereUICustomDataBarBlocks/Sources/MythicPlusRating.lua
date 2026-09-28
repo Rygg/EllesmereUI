@@ -1,15 +1,31 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
-local ADDON_NAME, ns = ...
+local _, addonNS = ...
+local DataBarsExtensions = addonNS and addonNS.DataBarsExtensions
 local EUI = EllesmereUI
-local LDB = LibStub and LibStub("LibDataBroker-1.1", true)
+-- DataBars keeps its module namespace private to its addon. Its engine publishes
+-- that namespace on the parent for its own options integration; this addon uses
+-- the same internal seam to register a separately updateable block. The hard
+-- TOC dependency guarantees DataBars has loaded first. Fail closed if that
+-- implementation detail changes instead of breaking the UI at startup.
+local ns = DataBarsExtensions and DataBarsExtensions.DataBars
+if not (DataBarsExtensions and DataBarsExtensions.RegisterBlock and DataBarsExtensions.Tip_AddActionColumns
+    and ns and ns.BlockFactories and ns.BLOCK_TYPES and ns.BLOCK_DEFAULTS and ns.BlockKit) then
+    return
+end
+if not (ns.Tip_AddDouble and ns.Tip_AddColumns and ns.Tip_AddActionDouble) then return end
+local L = EUI.L or function(text) return text end
+local K = ns.BlockKit
 local PORTALS = EUI and EUI.SEASON_PORTALS
-if not (LDB and type(PORTALS) == "table") then return end
+if type(PORTALS) ~= "table" then return end
+
+local BLOCK_TYPE = "mythicplusrating"
 
 local MAX_RUNS = 16
 
 local format = string.format
 local floor = math.floor
 local ceil = math.ceil
+local max = math.max
 local type = type
 local ipairs = ipairs
 local pcall = pcall
@@ -18,11 +34,6 @@ local InCombatLockdown = InCombatLockdown
 local ITEM_QUALITY_COLORS = ITEM_QUALITY_COLORS
 local MUTED_TEXT_COLOR = ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[0]
     or { r = 0.667, g = 0.667, b = 0.667 }
-
-local dataObject
-local eventFrame
-local owner
-local tokenBuffer = {}
 
 local function IsSecret(value)
     return issecretvalue and issecretvalue(value)
@@ -80,6 +91,44 @@ local function FormatRunTime(seconds)
     local remainder = seconds % 60
     if hours > 0 then return format("%d:%02d:%02d", hours, minutes, remainder) end
     return format("%d:%02d", minutes, remainder)
+end
+
+local function GetRunNumber(runInfo, field)
+    if type(runInfo) ~= "table" then return nil end
+    local value = runInfo[field]
+    if IsSecret(value) or type(value) ~= "number" then return nil end
+    return value
+end
+
+local function SelectSeasonBest(inTimeInfo, overtimeInfo)
+    local hasInTime = type(inTimeInfo) == "table"
+    local hasOvertime = type(overtimeInfo) == "table"
+    if not hasInTime then return hasOvertime and overtimeInfo or nil, false end
+    if not hasOvertime then return inTimeInfo, true end
+
+    local inTimeScore = GetRunNumber(inTimeInfo, "dungeonScore")
+    local overtimeScore = GetRunNumber(overtimeInfo, "dungeonScore")
+    if inTimeScore and overtimeScore then
+        if overtimeScore > inTimeScore then return overtimeInfo, false end
+        if inTimeScore > overtimeScore then return inTimeInfo, true end
+    elseif overtimeScore then
+        return overtimeInfo, false
+    elseif inTimeScore then
+        return inTimeInfo, true
+    end
+
+    local inTimeLevel = GetRunNumber(inTimeInfo, "level")
+    local overtimeLevel = GetRunNumber(overtimeInfo, "level")
+    if inTimeLevel and overtimeLevel then
+        if overtimeLevel > inTimeLevel then return overtimeInfo, false end
+        if inTimeLevel > overtimeLevel then return inTimeInfo, true end
+    elseif overtimeLevel then
+        return overtimeInfo, false
+    elseif inTimeLevel then
+        return inTimeInfo, true
+    end
+
+    return inTimeInfo, true
 end
 
 local function TimerChestCount(elapsed, limit, inTime)
@@ -153,14 +202,16 @@ local function GetSpellCooldownRemaining(spellID)
        or type(startTime) ~= "number" or type(duration) ~= "number" then
         return nil
     end
-    if not canaccessvalue(startTime) or not canaccessvalue(duration) then return nil end
+    if canaccessvalue and (not canaccessvalue(startTime) or not canaccessvalue(duration)) then return nil end
     if duration <= 0 then return 0 end
     return math.max(0, startTime + duration - GetTime())
 end
 
-local function RenderTooltip()
+local function RenderTooltip(button)
+    -- Use DataBars' owned tooltip helpers instead of defining another global
+    -- tooltip; this keeps the extension out of the engine while sharing its UI.
     local score = GetScore()
-    local title = "Mythic+ Rating: "
+    local title = L("Mythic+ Rating") .. ": "
     if score then
         title = title .. "|cff" .. GetColorHex(GetScoreColor(score)) .. tostring(score) .. "|r"
     else
@@ -169,17 +220,18 @@ local function RenderTooltip()
 
     local ar, ag, ab = GetAccentColor()
 
-    ns.Tip_Begin(owner)
+    ns.Tip_Begin(button)
     ns.Tip_AddLine(title, 1, 1, 1)
     ns.Tip_AddLine(" ")
-    ns.Tip_AddColumns("Dungeon", {
-        "|cff" .. MUTED_HEX .. "Level|r",
-        "|cff" .. MUTED_HEX .. "Score|r",
-        "|cff" .. MUTED_HEX .. "Time (Limit)|r",
+    ns.Tip_AddColumns(L("Dungeon"), {
+        "|cff" .. MUTED_HEX .. L("Level") .. "|r",
+        "|cff" .. MUTED_HEX .. L("Score") .. "|r",
+        "|cff" .. MUTED_HEX .. L("Time (Limit)") .. "|r",
     }, ar, ag, ab)
 
     local runCount, readyCount, knownCount = 0, 0, 0
     local soonestCooldown
+    local tokenBuffer = {}
     local mapsOK, mapIDs = false, nil
     if C_ChallengeMode and C_ChallengeMode.GetMapTable
        and C_ChallengeMode.GetMapUIInfo and C_MythicPlus and C_MythicPlus.GetSeasonBestForMap then
@@ -195,11 +247,7 @@ local function RenderTooltip()
                 if runOK then
                     if IsSecret(intimeInfo) then intimeInfo = nil end
                     if IsSecret(overtimeInfo) then overtimeInfo = nil end
-                    if type(intimeInfo) == "table" then
-                        runInfo, isInTime = intimeInfo, true
-                    elseif type(overtimeInfo) == "table" then
-                        runInfo, isInTime = overtimeInfo, false
-                    end
+                    runInfo, isInTime = SelectSeasonBest(intimeInfo, overtimeInfo)
                 end
 
                 runCount = runCount + 1
@@ -252,8 +300,7 @@ local function RenderTooltip()
                 tokenBuffer[2] = ratingText
                 tokenBuffer[3] = timeText
                 if readySpellID then
-                    -- White at rest; the tip kit's row overlay accents it on hover as the click cue.
-                    ns.Tip_AddActionColumns(dungeonName, tokenBuffer, readySpellID)
+                    DataBarsExtensions.Tip_AddActionColumns(dungeonName, tokenBuffer, readySpellID)
                 else
                     ns.Tip_AddColumns(dungeonName, tokenBuffer)
                 end
@@ -263,29 +310,20 @@ local function RenderTooltip()
 
     if knownCount > 0 then
         ns.Tip_AddLine(" ")
-        ns.Tip_AddLine("Portals", ar, ag, ab)
+        ns.Tip_AddLine(L("Portals"), ar, ag, ab)
         if readyCount > 0 then
-            ns.Tip_AddLine("Click a dungeon to teleport", 0.8, 0.8, 0.8)
+            ns.Tip_AddLine(L("Click a dungeon to teleport"), 0.8, 0.8, 0.8)
         else
             -- All portals share one cooldown, so a single soonest reading covers every dungeon.
             local cdText = soonestCooldown and FormatRunTime(ceil(soonestCooldown)) or "-"
-            ns.Tip_AddDouble("On Cooldown", cdText, 0.65, 0.65, 0.65, 0.5, 0.5, 0.5)
+            ns.Tip_AddDouble(L("On Cooldown"), cdText, 0.65, 0.65, 0.65, 0.5, 0.5, 0.5)
         end
     end
 
     ns.Tip_AddLine(" ")
-    ns.Tip_AddDouble("Left Click:", "Open Mythic+ Dungeons", 1, 1, 1, ar, ag, ab)
-    ns.Tip_AddDouble("Right Click:", "Open Dungeons & Raids", 1, 1, 1, ar, ag, ab)
+    ns.Tip_AddDouble(L("Left Click") .. ":", L("Open Mythic+ Dungeons"), 1, 1, 1, ar, ag, ab)
+    ns.Tip_AddDouble(L("Right Click") .. ":", L("Open Dungeons & Raids"), 1, 1, 1, ar, ag, ab)
     ns.Tip_Show()
-end
-
-local function ShowTooltip(frame)
-    owner = frame
-    RenderTooltip()
-end
-
-local function HideTooltip(frame)
-    ns.Tip_HideUnlessInteractive(frame)
 end
 
 local function OpenMythicPlusDungeons()
@@ -307,46 +345,119 @@ local function OpenDungeonsAndRaids()
     if PVEFrame_ToggleFrame then pcall(PVEFrame_ToggleFrame, "GroupFinderFrame", _G.LFDParentFrame) end
 end
 
-local function RefreshScore()
-    if not dataObject then return end
-    local score = GetScore()
-    if not score then
-        dataObject.text = "-"
-        return
-    end
-    dataObject.text = "|cff" .. GetColorHex(GetScoreColor(score)) .. tostring(score) .. "|r"
-end
+-- Register through the shared adapter while keeping this factory in the
+-- separately updateable custom-block addon.
+DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(blockCfg, slot, content, barCtx)
+    local inst = { cfg = blockCfg, slot = slot, content = content, ctx = barCtx }
+    inst.key = K.InstKey(barCtx, blockCfg)
+    inst.events = {
+        "PLAYER_ENTERING_WORLD",
+        "CHALLENGE_MODE_COMPLETED",
+        "SPELLS_CHANGED",
+        "SPELL_UPDATE_COOLDOWN",
+    }
 
-local function OnClick(_, mouseButton)
-    if mouseButton == "LeftButton" then
-        OpenMythicPlusDungeons()
-    elseif mouseButton == "RightButton" then
-        OpenDungeonsAndRaids()
-    end
-end
+    local mouseOver = false
+    local button = CreateFrame("Button", nil, content)
+    button:SetAllPoints()
+    button:EnableMouse(true)
+    button:RegisterForClicks("AnyUp")
 
-local objectOK, registeredObject = pcall(LDB.NewDataObject, LDB, "EllesmereUI Mythic+ Rating", {
-    type = "data source",
-    label = "Mythic+ Rating",
-    text = "-",
-    OnEnter = ShowTooltip,
-    OnLeave = HideTooltip,
-    OnClick = OnClick,
-})
-if not objectOK or type(registeredObject) ~= "table" then return end
-dataObject = registeredObject
+    local scoreText = button:CreateFontString(nil, "OVERLAY")
+    scoreText:SetPoint("CENTER")
 
-eventFrame = CreateFrame("Frame")
-eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-eventFrame:RegisterEvent("CHALLENGE_MODE_COMPLETED")
-eventFrame:RegisterEvent("SPELLS_CHANGED")
-eventFrame:RegisterEvent("SPELL_UPDATE_COOLDOWN")
-eventFrame:SetScript("OnEvent", function(_, event)
-    if event == "PLAYER_ENTERING_WORLD" or event == "CHALLENGE_MODE_COMPLETED" then
-        RefreshScore()
+    function inst:Refresh()
+        if self._dead then return end
+        local score = GetScore()
+        local text = score and tostring(score) or "-"
+        local barCfg = barCtx.cfg
+        local fontSize = max(9, floor(K.CONTENT_BASE * 0.4333 + 0.5))
+
+        ns.SetFont(scoreText, fontSize, barCfg)
+        scoreText:SetText(text)
+        scoreText:ClearAllPoints()
+
+        if barCtx.IsVertical() then
+            local slotW = K.VSlotW(self)
+            local innerW = max(24, slotW - 8)
+            ns.SetWrappedText(scoreText, innerW, "CENTER")
+            scoreText:SetPoint("CENTER", button, "CENTER")
+            local totalH = max(barCtx.GetThickness(), ns.SnapToPixelGrid(scoreText:GetStringHeight()) + 8)
+            content:SetSize(slotW, totalH)
+        else
+            ns.ResetInlineText(scoreText, "CENTER")
+            scoreText:SetPoint("CENTER", button, "CENTER")
+            local totalW = max(24, ns.SnapToPixelGrid(scoreText:GetStringWidth()) + 12)
+            content:SetSize(totalW, barCtx.GetThickness())
+        end
+        button:SetAllPoints(content)
+
+        local red, green, blue
+        if mouseOver then
+            red, green, blue = ns.GetAccent()
+        elseif score then
+            red, green, blue = GetScoreColor(score)
+        else
+            red, green, blue = MUTED_TEXT_COLOR.r, MUTED_TEXT_COLOR.g, MUTED_TEXT_COLOR.b
+        end
+        scoreText:SetTextColor(red, green, blue, 1)
+        K.MaybeRelayout(self)
     end
-    if ns.Tip_IsOwned(owner) then
-        RenderTooltip()
+
+    local function ShowTooltip()
+        RenderTooltip(button)
     end
+
+    button:SetScript("OnEnter", function()
+        mouseOver = true
+        inst:Refresh()
+        ShowTooltip()
+    end)
+    button:SetScript("OnLeave", function()
+        mouseOver = false
+        ns.Tip_HideUnlessInteractive(button) -- lets the cursor travel onto the tip to click a portal
+        inst:Refresh()
+    end)
+    button:SetScript("OnClick", function(_, mouseButton)
+        if mouseButton == "LeftButton" then
+            OpenMythicPlusDungeons()
+        elseif mouseButton == "RightButton" then
+            OpenDungeonsAndRaids()
+        end
+    end)
+
+    inst.eventFrame = K.MakeEventFrame(inst, function(self, event)
+        if self._dead then return end
+        self:Refresh()
+        if ns.Tip_IsOwned(button) then ShowTooltip() end
+    end)
+
+    function inst:Enable()
+        content:Show()
+        K.RegisterInstEvents(self)
+    end
+
+    function inst:Disable()
+        K.UnregisterInstEvents(self)
+        ns.Tip_Hide(button)
+        mouseOver = false
+        content:Hide()
+    end
+
+    function inst:GetAutoLength()
+        if not content:IsShown() then return 0 end
+        if barCtx.IsVertical() then
+            return max(content:GetHeight() or 40, 30)
+        end
+        return max(content:GetWidth() or 40, 24)
+    end
+
+    function inst:Destroy()
+        self._dead = true
+        K.UnregisterInstEvents(self)
+        ns.Tip_Hide(button)
+        content:Hide()
+    end
+
+    return inst
 end)
-RefreshScore()
