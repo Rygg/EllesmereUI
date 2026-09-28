@@ -3421,74 +3421,48 @@ local function LayoutCastbarIcon(castbar, inWidth, iconH, onRight, offX, offY, i
         PP.Point(castbar, "TOPLEFT", bg, "TOPLEFT", inWidth and side or 0, 0)
         PP.Point(castbar, "BOTTOMRIGHT", bg, "BOTTOMRIGHT", 0, 0)
     end
-
-    -- Icon and bar are separate frames, each with its own full 1px border
-    -- (PP.CreateBorder at creation, on iconFrame and on castbar). In every
-    -- inWidth/onRight combination above they sit flush against each other,
-    -- so both draw a strip at the shared seam -- doubling it to 2px. Suppress
-    -- the facing edge on each side, same _hideLeft/_hideRight pattern as the
-    -- health/power seam elsewhere in this file. Only when truly flush (no
-    -- configured icon offset): with an offset there's a real gap, and hiding
-    -- both edges would leave it with no border on either side. And only when
-    -- the icon is actually shown -- a disabled icon still owns a (hidden)
-    -- iconFrame, so blindly suppressing the bar's facing edge here left the
-    -- bar with no border at all on that side while the icon is off.
-    -- Custom Border Style (ns.UF_ApplyCastBorder, run before this) moves the
-    -- bar's border onto castbar._cbHost: a Solid one shares the seam at its own
-    -- size, a textured or hidden one (_cbSolid false) shares none. An icon on
-    -- the portrait shares none either.
-    if iconFrame then
-        local iconEdges = PP.GetBorders(iconFrame)
-        local barFrame = castbar._cbHost or castbar
-        local barEdges = PP.GetBorders(barFrame)
-        -- The bar's strips are drawn: its own, or a custom Solid border above 0.
-        local barDrawn = barEdges and (barFrame == castbar or castbar._cbSolid)
-        if iconEdges and (barEdges or castbar._cbHost) then
-            if barDrawn and iconShown and offX == 0 and offY == 0 and not portraitBd then
-                iconEdges._hideRight = (not onRight) or nil
-                iconEdges._hideLeft  = onRight or nil
-                barEdges._hideLeft   = (not onRight) or nil
-                barEdges._hideRight  = onRight or nil
-            else
-                iconEdges._hideLeft, iconEdges._hideRight = nil, nil
-                if barEdges then barEdges._hideLeft, barEdges._hideRight = nil, nil end
-            end
-            PP.SetBorderSize(iconFrame, 1)
-            if barDrawn then PP.SetBorderSize(barFrame, (barFrame == castbar) and 1 or castbar._cbSize) end
-        end
-    end
 end
 
 -- Cast bar Custom Border Style (s.castBorderCustom, opt-in per unit; boss1-5
 -- share one table). Off: the 1px black border CreateCastBar drew on the bar
--- stays exactly as it is and this returns on its first test; nothing is built.
+-- stays as it is; only the icon decoration pass runs and nothing is built
+-- unless one of its options is enabled.
 -- On: that border hides and the chosen style draws on castbar._cbBorder, our
 -- own child frame of the bar built on first enable, so it shows and hides with
 -- the bar as the old border did. It sits under the cast text overlay; Show
 -- Behind drops it under the bar's holder. Settings passes only (creation and
--- ReloadFrames, before LayoutCastbarIcon, which reads _cbHost / _cbSolid /
--- _cbSize for the icon seam). An exact size re-applies on a UI scale change
+-- ReloadFrames, after LayoutCastbarIcon). An exact size re-applies on a UI
+-- scale change
 -- through ApplyBorderStyle's own edgePx registration. Stands down under a
 -- stock style: stock = nil reads the session's latched style, the options
 -- preview (which shares this) passes its own. On ns: the local cap.
-function ns.UF_ApplyCastBorder(castbar, s, stock)
+function ns.UF_ApplyCastBorder(castbar, s, stock, unit, icon)
     if not castbar then return end
     if stock == nil then stock = ns.UF_Blizz() end
     local host = castbar._cbBorder
     if stock or not (s and s.castBorderCustom == true) then
         if castbar._cbHost then
             castbar._cbHost = nil
+            EllesmereUI.HideBorderStyle(host)
             host:Hide()
             -- The bar's own border back (the stock chrome keeps it hidden).
             if not stock then PP.ShowBorder(castbar) end
         end
+        ns.UF_ApplyCastIconBorder(castbar, s, stock, unit, icon)
         return
     end
     if not host then
         host = CreateFrame("Frame", nil, castbar)
-        host:SetAllPoints(castbar)
         castbar._cbBorder = host
     end
+    -- The fill gives up the icon's width; the outer border keeps the whole
+    -- footprint. Anchor to the fill so the options preview uses the same rule.
+    local inWidth = CastIconInWidth(unit, s)
+    local onRight = CastIconOnRight(unit, s)
+    local side = inWidth and ((unit == "player" and s.playerCastbarHeight or s.castbarHeight) or 14) or 0
+    host:ClearAllPoints()
+    PP.Point(host, "TOPLEFT", castbar, "TOPLEFT", onRight and 0 or -side, 0)
+    PP.Point(host, "BOTTOMRIGHT", castbar, "BOTTOMRIGHT", onRight and side or 0, 0)
     castbar._cbHost = host
     PP.HideBorder(castbar)
     -- Levelled before the apply: a textured style's backdrop takes the host's.
@@ -3510,15 +3484,128 @@ function ns.UF_ApplyCastBorder(castbar, s, stock)
         s.castBorderShiftX, s.castBorderShiftY, "unitframes", size, nil, px)
     castbar._cbSolid = (tex == "solid" or tex == "") and size > 0
     castbar._cbSize = px or size
+    ns.UF_ApplyCastIconBorder(castbar, s, stock, unit, icon)
+end
+
+-- Cast icon decoration, shared by live frames and the options preview. New
+-- resources are built only on opt-in, during the existing settings pass.
+function ns.UF_ApplyCastIconBorder(castbar, s, stock, unit, icon)
+    icon = icon or castbar._iconFrame
+    if not icon then return end
+    local shown = CastIconShown(unit, s)
+    local portrait = ns.UF_CastIconOnPortrait(unit, s)
+    local inWidth = CastIconInWidth(unit, s)
+    local onRight = CastIconOnRight(unit, s)
+    local offX, offY = CastIconOffsets(unit, s)
+    local custom = s and s.castBorderCustom == true
+    local styled = not stock and shown and not portrait and s and s.castIconBorder == true
+    local host = icon._castBorder
+    local tex = custom and (s.castBorderStyle or "solid") or "solid"
+    local size = custom and (s.castBorderSize or 1) or 1
+    local c = custom and s.castBorderColor
+    local alpha = custom and (s.castBorderAlpha or 1) or 1
+    local px = custom and EllesmereUI.BorderPx(s.castBorderSizePx, size, tex) or nil
+    if styled then
+        if not host then
+            host = CreateFrame("Frame", nil, icon)
+            host:SetAllPoints(icon)
+            icon._castBorder = host
+        end
+        host:SetFrameLevel(custom and s.castBorderBehind and math.max(0, icon:GetFrameLevel() - 1) or icon:GetFrameLevel() + 1)
+        PP.HideBorder(icon)
+        EllesmereUI.ApplyBorderStyle(host, size, c and c.r or 0, c and c.g or 0, c and c.b or 0,
+            alpha, tex, custom and s.castBorderOffsetX or nil, custom and s.castBorderOffsetY or nil,
+            custom and s.castBorderShiftX or nil, custom and s.castBorderShiftY or nil, "unitframes", size, nil, px)
+    elseif host then
+        EllesmereUI.HideBorderStyle(host)
+        host:Hide()
+        if not stock and not portrait then PP.ShowBorder(icon) end
+    end
+
+    -- Keep the old 1px icon appearance unless opted in. Only adjoining
+    -- borders share an edge; the full-width custom border never loses its
+    -- outside edge to an integrated icon.
+    if not stock then
+        local iconEdges = PP.GetBorders(icon)
+        local barFrame = castbar._cbHost or castbar
+        local barEdges = PP.GetBorders(barFrame)
+        local barDrawn = barEdges and (barFrame == castbar or castbar._cbSolid)
+        local flush = shown and not portrait and offX == 0 and offY == 0
+        local outer = castbar._cbHost and inWidth
+        if iconEdges then
+            local hide = flush and not styled and (barDrawn or outer)
+            iconEdges._hideLeft = hide and onRight or nil
+            iconEdges._hideRight = hide and not onRight or nil
+            PP.SetBorderSize(icon, 1)
+        end
+        if barEdges then
+            local hide = flush and not styled and not outer
+            barEdges._hideLeft = hide and not onRight or nil
+            barEdges._hideRight = hide and onRight or nil
+            if barDrawn then PP.SetBorderSize(barFrame, barFrame == castbar and 1 or castbar._cbSize) end
+        end
+    end
+
+    local seam = castbar._iconSeam
+    if not (s and s.castIconSeparator == true and not stock and shown and inWidth and not portrait and size > 0) then
+        if seam then
+            seam:Hide()
+            EllesmereUI.RegisterPxReapply(seam, nil)
+        end
+        return
+    end
+    if not seam then
+        seam = CreateFrame("Frame", nil, castbar)
+        seam:SetAllPoints(castbar)
+        seam._tex = seam:CreateTexture(nil, "OVERLAY")
+        castbar._iconSeam = seam
+    end
+    -- Above the cast border, including Solid's child at border level +1.
+    local borderFrame = castbar._cbHost or castbar
+    seam:SetFrameLevel(math.max(castbar:GetFrameLevel(), borderFrame:GetFrameLevel()) + 2)
+    seam._key, seam._size, seam._px, seam._right = tex, size, px, onRight
+    seam._path = EllesmereUI.GetBorderCompanion(tex, "sepV")
+    seam._tex:SetVertexColor(c and c.r or 0, c and c.g or 0, c and c.b or 0, alpha)
+    ns.UF_LayoutCastIconSeam(seam)
+    seam:Show()
+    EllesmereUI.RegisterPxReapply(seam, ns.UF_LayoutCastIconSeam)
+end
+
+-- Reuses the vertical companion art's geometry from Resource Bars: its
+-- line is two texels from the leading edge, mirrored for a right-side icon.
+function ns.UF_LayoutCastIconSeam(seam)
+    local t = seam._tex
+    local es = seam:GetEffectiveScale()
+    local width, lead
+    if seam._path then
+        width = EllesmereUI.BorderCompanionThickness(seam._key, seam._size, seam._px, es)
+        lead = PP.SnapForES(2 * width / EllesmereUI.GetBorderCompanion(seam._key, "sepSize"), es)
+        t:SetTexture(seam._path)
+        t:SetTexCoord(seam._right and 1 or 0, seam._right and 0 or 1, 0, 1)
+    else
+        local onePixel = es > 0 and PP.perfect / es or PP.mult
+        width = math.max(1, math.floor((seam._px or seam._size) + 0.5)) * onePixel
+        lead = 0
+        t:SetColorTexture(1, 1, 1, 1)
+        t:SetTexCoord(0, 1, 0, 1)
+    end
+    t:ClearAllPoints()
+    if seam._right then
+        t:SetPoint("TOPRIGHT", seam, "TOPRIGHT", lead, 0)
+        t:SetPoint("BOTTOMRIGHT", seam, "BOTTOMRIGHT", lead, 0)
+    else
+        t:SetPoint("TOPLEFT", seam, "TOPLEFT", -lead, 0)
+        t:SetPoint("BOTTOMLEFT", seam, "BOTTOMLEFT", -lead, 0)
+    end
+    t:SetWidth(width)
 end
 
 -- Size matching: the width and height a Custom Border Style cast border
 -- draws OUTSIDE the cast bar holder (the unlock element's frame), from the
 -- same arguments ns.UF_ApplyCastBorder passes; nil while the opt-in is off,
 -- for Solid and under the stock styles, so the pad stays exactly as before.
--- The border wraps the bar, which an in-width icon insets inside the holder
--- by the icon's width (the configured cast bar height): that side's reach
--- shrinks by it. Each side clamps at 0 before the sum. Settings only.
+-- The border wraps the whole holder, including an in-width icon. Each side
+-- clamps at 0 before the sum. Settings only.
 function ns.UF_CastBorderPad(unit, s)
     if not (s and s.castBorderCustom == true) or ns.UF_Blizz() then return nil end
     local tex = s.castBorderStyle or "solid"
@@ -3527,10 +3614,6 @@ function ns.UF_CastBorderPad(unit, s)
         s.castBorderShiftX, s.castBorderShiftY, "unitframes", size,
         EllesmereUI.BorderPx(s.castBorderSizePx, size, tex), nil, s.castBorderAlpha or 1)
     if not l then return nil end
-    if CastIconInWidth(unit, s) then
-        local iw = (unit == "player") and (s.playerCastbarHeight or 14) or (s.castbarHeight or 14)
-        if CastIconOnRight(unit, s) then r = r - iw else l = l - iw end
-    end
     local w = (l > 0 and l or 0) + (r > 0 and r or 0)
     local h = (t > 0 and t or 0) + (b > 0 and b or 0)
     if w <= 0 and h <= 0 then return nil end
@@ -4366,6 +4449,42 @@ function ns.UF_PortraitExtras(host, s, shape)
     end
 end
 
+-- Scale class art around its center, retaining the existing inset and mask fill
+-- at 100%. Shared with the preview; sprite coordinates and borders stay intact.
+function ns.UF_SetClassPortraitPoints(tex, host, zoom, insetX, insetY)
+    local clip = false
+    if zoom and zoom ~= 100 and not ns.UF_Blizz() then
+        local scale = zoom / 100
+        local halfW, halfH = host:GetWidth() * 0.5, host:GetHeight() * 0.5
+        insetX = halfW - (halfW - insetX) * scale
+        insetY = halfH - (halfH - insetY) * scale
+        clip = zoom > 100
+    end
+    -- Clip only the enlarged class texture, never the portrait's decorations.
+    -- Nothing is created for the default zoom or for zooming out.
+    local mask = tex._classZoomMask
+    if clip then
+        if not mask then
+            mask = host:CreateMaskTexture()
+            mask:SetAllPoints(host)
+            mask:SetTexture("Interface\\Buttons\\WHITE8X8", "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+            tex._classZoomMask = mask
+        end
+        if not tex._classZoomMasked then
+            tex:AddMaskTexture(mask)
+            mask:Show()
+            tex._classZoomMasked = true
+        end
+    elseif tex._classZoomMasked then
+        tex:RemoveMaskTexture(mask)
+        mask:Hide()
+        tex._classZoomMasked = nil
+    end
+    tex:ClearAllPoints()
+    PP.Point(tex, "TOPLEFT", host, "TOPLEFT", insetX, -insetY)
+    PP.Point(tex, "BOTTOMRIGHT", host, "BOTTOMRIGHT", -insetX, insetY)
+end
+
 -- Apply a detached portrait shape (mask + border overlay) to a portrait backdrop;
 -- creates the mask/border textures on first call, then updates them.
 --   backdrop  : the portrait backdrop frame
@@ -4448,12 +4567,11 @@ local function ApplyDetachedPortraitShape(backdrop, uSettings, unitToken)
             PP.Point(backdrop._2d, "BOTTOMRIGHT", backdrop, "BOTTOMRIGHT", 0, 0)
         end
         if backdrop._class then
-            backdrop._class:ClearAllPoints()
             local bh2 = backdrop:GetHeight()
             if bh2 < 1 then bh2 = 46 end
             local classInset = math.floor(bh2 * 0.08)
-            PP.Point(backdrop._class, "TOPLEFT", backdrop, "TOPLEFT", classInset, -classInset)
-            PP.Point(backdrop._class, "BOTTOMRIGHT", backdrop, "BOTTOMRIGHT", -classInset, classInset)
+            ns.UF_SetClassPortraitPoints(backdrop._class, backdrop,
+                uSettings and uSettings.portraitClassZoom, classInset, classInset)
         end
         if backdrop._3d then
             backdrop._3d:ClearAllPoints()
@@ -4486,12 +4604,11 @@ local function ApplyDetachedPortraitShape(backdrop, uSettings, unitToken)
             PP.Point(backdrop._2d, "BOTTOMRIGHT", backdrop, "BOTTOMRIGHT", 0, 0)
         end
         if backdrop._class then
-            backdrop._class:ClearAllPoints()
             local bh2 = backdrop:GetHeight()
             if bh2 < 1 then bh2 = 46 end
             local classInset = math.floor(bh2 * 0.08)
-            PP.Point(backdrop._class, "TOPLEFT", backdrop, "TOPLEFT", classInset, -classInset)
-            PP.Point(backdrop._class, "BOTTOMRIGHT", backdrop, "BOTTOMRIGHT", -classInset, classInset)
+            ns.UF_SetClassPortraitPoints(backdrop._class, backdrop,
+                uSettings and uSettings.portraitClassZoom, classInset, classInset)
         end
         if backdrop._3d then
             backdrop._3d:ClearAllPoints()
@@ -4587,10 +4704,9 @@ local function ApplyDetachedPortraitShape(backdrop, uSettings, unitToken)
         PP.Point(backdrop._2d, "BOTTOMRIGHT", backdrop, "BOTTOMRIGHT", oR, oB)
     end
     if backdrop._class then
-        backdrop._class:ClearAllPoints()
         local classInset = math.floor(bh2 * 0.08)
-        PP.Point(backdrop._class, "TOPLEFT", backdrop, "TOPLEFT", classInset + oL, -classInset + oT)
-        PP.Point(backdrop._class, "BOTTOMRIGHT", backdrop, "BOTTOMRIGHT", -classInset + oR, classInset + oB)
+        ns.UF_SetClassPortraitPoints(backdrop._class, backdrop,
+            uSettings and uSettings.portraitClassZoom, classInset + oL, classInset - oT)
     end
     if backdrop._3d then
         -- 3D models ignore SetClipsChildren, so keep them inside the backdrop
@@ -5073,6 +5189,10 @@ local function UpdateBordersForScale(frame, unit)
     -- Blizzard Style: the stock geometry is re-asserted over everything above
     -- (a reload runs its own sweep after the per-unit re-anchors instead).
     if ns.UF_Blizz() and not ns._ufReloadSweep then ns.UF_ApplyBlizzardLayout(frame, unit) end
+    if settings.portraitSeparator or frame._portraitSeparator then
+        ns.UpdatePortraitSeparator(frame, frame.Portrait and frame.Portrait.backdrop,
+            settings, effectiveSide, showPortrait and isAttached, ns.UF_Blizz())
+    end
 end
 
 -- All sizing is width/height based; positioning is owned by Unlock Mode.
@@ -6724,8 +6844,8 @@ end
 -- Border Style's separator strip (EllesmereUI.GetBorderCompanion "sepH") along the
 -- health / power join while the power bar is attached with a height, the frame
 -- border is above 0 and its style has seam art; flipped for a bar above health.
--- It rides power._pbSeam, our own child frame of the power bar built on first
--- enable (the power border host exists only while Power Border Size is above 0),
+-- It rides power._pbSeam, our own frame anchored to the power bar, built on first
+-- enable and parented outside the bar clip so its ends can overlap the border,
 -- tinted with the frame border colour, which FrameBorderEnter / Leave recolour
 -- with the border. Thickness follows the border's edge (exact size, else the
 -- step's), height and offsets snapped at the bar's effective scale; re-laid on
@@ -6743,7 +6863,7 @@ function ns.UpdatePowerSeam(power, s, stock, preview)
         if stock == nil then stock = ns.UF_Blizz() end
         local pos = s.powerPosition or "below"
         if not stock and (pos == "above" or pos == "below") and (s.powerHeight or 6) > 0
-           and (s.borderSize or 1) > 0 then
+           and (s.borderSize or 1) > 0 and power:IsShown() then
             path = EllesmereUI.GetBorderCompanion(s.borderTexture or "solid", "sepH")
         end
     end
@@ -6754,15 +6874,26 @@ function ns.UpdatePowerSeam(power, s, stock, preview)
         end
         return false
     end
+    -- Live power bars sit inside _barClip; a higher level alone cannot escape
+    -- that clipping. Keep the seam on the unit frame, as in the preview.
+    local owner = power:GetParent()
+    while owner and not (owner.unifiedBorder or owner._border) do owner = owner:GetParent() end
+    local border = owner and (owner.unifiedBorder or owner._border)
+    local parent = owner or power
     if not seam then
-        seam = CreateFrame("Frame", nil, power)
-        seam:SetAllPoints(power)
+        seam = CreateFrame("Frame", nil, parent)
         seam._tex = seam:CreateTexture(nil, "ARTWORK")
         power._pbSeam = seam
+    elseif seam:GetParent() ~= parent then
+        seam:SetParent(parent)
     end
-    -- Over the health and power fills, under the frame border (frame +10) that
-    -- closes its ends.
-    seam:SetFrameLevel(power:GetFrameLevel() + 1)
+    seam._power = power
+    seam:ClearAllPoints()
+    seam:SetAllPoints(power)
+    -- Above the fills and the unit frame border, on the border's strata.
+    seam:SetFrameStrata((border or power):GetFrameStrata())
+    seam:SetFrameLevel(math.max(power:GetFrameLevel() + 1,
+        border and border:GetFrameLevel() + 1 or 0))
     local key, size = s.borderTexture, s.borderSize or 1
     local px = EllesmereUI.BorderPx(s.borderSizePx, size, key)
     seam._key, seam._step, seam._px, seam._path = key, size, px, path
@@ -6780,7 +6911,7 @@ end
 -- texels (its soft edge spans texels 0-9 of 32, centred on texel 5): raising
 -- the strip 5/32 of its thickness centres the line on the join.
 function ns.UF_LayoutPowerSeam(seam)
-    local power, t = seam:GetParent(), seam._tex
+    local power, t = seam._power, seam._tex
     local es = power:GetEffectiveScale()
     if not (es and es > 0.01) then es = UIParent:GetEffectiveScale() end
     local thick = EllesmereUI.BorderCompanionThickness(seam._key, seam._step, seam._px, es)
@@ -6805,6 +6936,68 @@ function ns.UF_LayoutPowerSeam(seam)
         t:SetPoint("TOPRIGHT", power, "TOPRIGHT", 0, raise)
     end
     t:SetHeight(thick)
+    t:Show()
+end
+
+-- Attached portrait divider: reuse the border style's vertical companion art.
+-- A sibling of the portrait avoids clipping the strip where it crosses into the
+-- bars. Built only on opt-in; layout and colour updates use existing passes.
+function ns.UpdatePortraitSeparator(frame, portrait, s, side, attached, stock, preview)
+    local seam = frame._portraitSeparator
+    local path
+    if s.portraitSeparator and attached and portrait and portrait:IsShown()
+       and not stock and (s.borderSize or 1) > 0 then
+        path = EllesmereUI.GetBorderCompanion(s.borderTexture or "solid", "sepV")
+    end
+    if not path then
+        if seam then
+            seam:Hide()
+            EllesmereUI.RegisterPxReapply(seam, nil)
+        end
+        return
+    end
+    if not seam then
+        seam = CreateFrame("Frame", nil, frame)
+        seam._tex = seam:CreateTexture(nil, "ARTWORK")
+        frame._portraitSeparator = seam
+    end
+    seam:SetAllPoints(portrait)
+    -- Above portrait/bar fills and the outer border, on the same strata.
+    local border = frame.unifiedBorder or frame._border
+    seam:SetFrameLevel(math.max(frame:GetFrameLevel() + (preview and 4 or 9),
+        border and border:GetFrameLevel() + 1 or 0))
+    seam._key, seam._step, seam._path = s.borderTexture, s.borderSize or 1, path
+    seam._px = EllesmereUI.BorderPx(s.borderSizePx, seam._step, seam._key)
+    seam._right = side == "right"
+    local c = s.borderColor
+    seam._tex:SetVertexColor(c and c.r or 0, c and c.g or 0, c and c.b or 0, s.borderAlpha or 1)
+    ns.UF_LayoutPortraitSeparator(seam)
+    seam:Show()
+    EllesmereUI.RegisterPxReapply(seam, (seam._px and not preview) and ns.UF_LayoutPortraitSeparator or nil)
+end
+
+function ns.UF_LayoutPortraitSeparator(seam)
+    local t = seam._tex
+    local es = seam:GetEffectiveScale()
+    local thick = EllesmereUI.BorderCompanionThickness(seam._key, seam._step, seam._px, es)
+    if not thick or thick <= 0 then t:Hide(); return end
+    if t._path ~= seam._path then
+        t:SetTexture(seam._path)
+        t._path = seam._path
+    end
+    -- As on cast icons, the vertical art's leading 2/16 sits over the portrait.
+    local lead = PP.SnapForES(thick * 2 / 16, es)
+    t:ClearAllPoints()
+    if seam._right then
+        t:SetTexCoord(1, 0, 0, 1)
+        t:SetPoint("TOPRIGHT", seam, "TOPLEFT", lead, 0)
+        t:SetPoint("BOTTOMRIGHT", seam, "BOTTOMLEFT", lead, 0)
+    else
+        t:SetTexCoord(0, 1, 0, 1)
+        t:SetPoint("TOPLEFT", seam, "TOPRIGHT", -lead, 0)
+        t:SetPoint("BOTTOMLEFT", seam, "BOTTOMRIGHT", -lead, 0)
+    end
+    t:SetWidth(thick)
     t:Show()
 end
 
@@ -7379,8 +7572,8 @@ local function CreatePortrait(frame, side, frameHeight, unit)
     -- first dispatch.
     local texClass = backdrop:CreateTexture(nil, "ARTWORK")
     local classInset = math.floor(portraitHeight * 0.08)
-    PP.Point(texClass, "TOPLEFT", backdrop, "TOPLEFT", classInset, -classInset)
-    PP.Point(texClass, "BOTTOMRIGHT", backdrop, "BOTTOMRIGHT", -classInset, classInset)
+    ns.UF_SetClassPortraitPoints(texClass, backdrop,
+        uSettings and uSettings.portraitClassZoom, classInset, classInset)
     texClass:SetAlpha(0.8)
     if unit and UnitIsPlayer(unit) then
         ns.UF_PaintClassIcon(texClass, unit, (uSettings and uSettings.classThemeStyle) or "modern",
@@ -8177,9 +8370,9 @@ local function CreateCastBar(frame, unit, settings)
     -- update paths and whenever the cast-bar height changes).
     do
         local offX, offY = CastIconOffsets(unit, settings)
-        ns.UF_ApplyCastBorder(castbar, settings)
         LayoutCastbarIcon(castbar, CastIconInWidth(unit, settings), cbHeight, CastIconOnRight(unit, settings), offX, offY, CastIconShown(unit, settings), settings and settings[ns.UF_CastClassicKey(unit)],
             ns.UF_CastIconPortrait(castbar, frame, settings, unit))
+        ns.UF_ApplyCastBorder(castbar, settings, nil, unit)
     end
 
     return castbar
@@ -8515,6 +8708,8 @@ local function FrameBorderEnter(self)
     -- So does the Power Bar Seam (only once built).
     local seam = self.Power and self.Power._pbSeam
     if seam and seam:IsShown() then seam._tex:SetVertexColor(hc.r, hc.g, hc.b, ha) end
+    local portraitSeam = self._portraitSeparator
+    if portraitSeam and portraitSeam:IsShown() then portraitSeam._tex:SetVertexColor(hc.r, hc.g, hc.b, ha) end
 end
 local function FrameBorderLeave(self)
     if not self.unifiedBorder then return end
@@ -8535,6 +8730,8 @@ local function FrameBorderLeave(self)
     if ring and ring:IsShown() then ring:SetVertexColor(bc.r, bc.g, bc.b, ba) end
     local seam = self.Power and self.Power._pbSeam
     if seam and seam:IsShown() then seam._tex:SetVertexColor(bc.r, bc.g, bc.b, ba) end
+    local portraitSeam = self._portraitSeparator
+    if portraitSeam and portraitSeam:IsShown() then portraitSeam._tex:SetVertexColor(bc.r, bc.g, bc.b, ba) end
 end
 
 -- Unified border for unit frames using the PP border system
@@ -12863,9 +13060,9 @@ ReloadFramesBody = function()
                                     castbarBg._bgTex:SetColorTexture(cbg and cbg.r or 0, cbg and cbg.g or 0, cbg and cbg.b or 0, settings.castBgAlpha or 0.5)
                                 end
                                 local pIconOffX, pIconOffY = CastIconOffsets("player", settings)
-                                ns.UF_ApplyCastBorder(frame.Castbar, settings)
                                 LayoutCastbarIcon(frame.Castbar, CastIconInWidth("player", settings), settings.playerCastbarHeight or 14, CastIconOnRight("player", settings), pIconOffX, pIconOffY, CastIconShown("player", settings), settings.playerCastbarStockBorderScale,
                                     ns.UF_CastIconPortrait(frame.Castbar, frame, settings, "player"))
+                                ns.UF_ApplyCastBorder(frame.Castbar, settings, nil, "player")
                                 -- Resize cast icon to match castbar height
                                 if frame.Castbar._iconFrame then
                                     PP.Size(frame.Castbar._iconFrame, cbH, cbH)
@@ -13239,9 +13436,9 @@ ReloadFramesBody = function()
                                     castbarBg._bgTex:SetColorTexture(cbg and cbg.r or 0, cbg and cbg.g or 0, cbg and cbg.b or 0, settings.castBgAlpha or 0.5)
                                 end
                                 local tIconOffX, tIconOffY = CastIconOffsets("target", settings)
-                                ns.UF_ApplyCastBorder(frame.Castbar, settings)
                                 LayoutCastbarIcon(frame.Castbar, CastIconInWidth("target", settings), settings.castbarHeight or 14, CastIconOnRight("target", settings), tIconOffX, tIconOffY, CastIconShown("target", settings), settings.castbarStockBorderScale,
                                     ns.UF_CastIconPortrait(frame.Castbar, frame, settings, "target"))
+                                ns.UF_ApplyCastBorder(frame.Castbar, settings, nil, "target")
                                 if frame.Castbar._iconFrame then
                                     PP.Size(frame.Castbar._iconFrame, cbH2, cbH2)
                                     if not frame.Castbar:IsShown() then
@@ -13517,9 +13714,9 @@ ReloadFramesBody = function()
                                 castbarBg._bgTex:SetColorTexture(cbg and cbg.r or 0, cbg and cbg.g or 0, cbg and cbg.b or 0, settings.castBgAlpha or 0.5)
                             end
                             local fIconOffX, fIconOffY = CastIconOffsets("focus", settings)
-                            ns.UF_ApplyCastBorder(frame.Castbar, settings)
                             LayoutCastbarIcon(frame.Castbar, CastIconInWidth("focus", settings), settings.castbarHeight or 14, CastIconOnRight("focus", settings), fIconOffX, fIconOffY, CastIconShown("focus", settings), settings.castbarStockBorderScale,
                                 ns.UF_CastIconPortrait(frame.Castbar, frame, settings, "focus"))
+                            ns.UF_ApplyCastBorder(frame.Castbar, settings, nil, "focus")
                             if frame.Castbar._iconFrame then
                                 PP.Size(frame.Castbar._iconFrame, cbH3, cbH3)
                                 if not frame.Castbar:IsShown() then
@@ -13796,8 +13993,8 @@ ReloadFramesBody = function()
                             if bCbW > 0 and bCbW < 30 then bCbW = 30 end
                             PP.Size(castbarBg, bCbW > 0 and bCbW or totalWidth, settings.castbarHeight or 14)
                             local bIconOffX, bIconOffY = CastIconOffsets("boss1", settings)
-                            ns.UF_ApplyCastBorder(frame.Castbar, settings)
                             LayoutCastbarIcon(frame.Castbar, CastIconInWidth("boss1", settings), settings.castbarHeight or 14, CastIconOnRight("boss1", settings), bIconOffX, bIconOffY, CastIconShown("boss1", settings), settings.castbarStockBorderScale)
+                            ns.UF_ApplyCastBorder(frame.Castbar, settings, nil, "boss1")
                             if frame.Castbar._iconFrame then
                                 local cbH = settings.castbarHeight or 14
                                 PP.Size(frame.Castbar._iconFrame, cbH, cbH)

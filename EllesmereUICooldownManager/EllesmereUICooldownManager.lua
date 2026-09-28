@@ -2189,8 +2189,9 @@ ns.CDM_BAR_ROOTS = {
 local function GetAllCDMSlots(root)
     if not root or not root.GetChildren then return {} end
     local slots = {}
-    for i = 1, root:GetNumChildren() do
-        local c = select(i, root:GetChildren())
+    local children = { root:GetChildren() }
+    for i = 1, #children do
+        local c = children[i]
         if c and c.GetWidth and c:GetWidth() > 5 then
             slots[#slots + 1] = c
         end
@@ -2219,8 +2220,9 @@ local function GetOrCreateCDMBorder(slot)
         slot.__ECMEIcon = nil
         slot.__ECMECooldown = nil
 
-        for ri = 1, slot:GetNumRegions() do
-            local region = select(ri, slot:GetRegions())
+        local regions = { slot:GetRegions() }
+        for ri = 1, #regions do
+            local region = regions[ri]
             if region and region.GetObjectType then
                 local objType = region:GetObjectType()
                 if objType == "MaskTexture" then
@@ -2242,22 +2244,25 @@ local function GetOrCreateCDMBorder(slot)
             end
         end
 
-        for ci = 1, slot:GetNumChildren() do
-            local child = select(ci, slot:GetChildren())
+        local children = { slot:GetChildren() }
+        for ci = 1, #children do
+            local child = children[ci]
             if child and child.GetObjectType then
                 local objType = child:GetObjectType()
                 if objType == "MaskTexture" then
                     slot.__ECMEHidden[#slot.__ECMEHidden + 1] = child
                 elseif objType == "Cooldown" then
                     slot.__ECMECooldown = child
-                    for k = 1, child:GetNumChildren() do
-                        local cdChild = select(k, child:GetChildren())
+                    local children2 = { child:GetChildren() }
+                    for k = 1, #children2 do
+                        local cdChild = children2[k]
                         if cdChild and cdChild.GetObjectType and cdChild:GetObjectType() == "MaskTexture" then
                             slot.__ECMEHidden[#slot.__ECMEHidden + 1] = cdChild
                         end
                     end
-                    for k = 1, child:GetNumRegions() do
-                        local cdRegion = select(k, child:GetRegions())
+                    local regions2 = { child:GetRegions() }
+                    for k = 1, #regions2 do
+                        local cdRegion = regions2[k]
                         if cdRegion and cdRegion.GetObjectType and cdRegion:GetObjectType() == "MaskTexture" then
                             slot.__ECMEHidden[#slot.__ECMEHidden + 1] = cdRegion
                         end
@@ -3154,11 +3159,11 @@ CaptureCDMPositions = function()
 
             -- Icon size + spacing from child icons. Blizzard CDM icons have a base size plus a
             -- per-icon scale driven by the IconSize percentage slider; spacing is the gap between two adjacent visible icons in parent coordinates.
-            local childCount = frame:GetNumChildren()
             local numDistinctY = {}
             local shownIcons = {}
-            for ci = 1, childCount do
-                local child = select(ci, frame:GetChildren())
+            local children = { frame:GetChildren() }
+            for ci = 1, #children do
+                local child = children[ci]
                 if child and child.Icon then
                     local cw = child:GetWidth()
                     local cs = child:GetScale()
@@ -8214,8 +8219,9 @@ BuildAllCDMBars = function()
                         local fR = ifc.pendingFontR
                         local fG = ifc.pendingFontG
                         local fB = ifc.pendingFontB
-                        for ri = 1, cd:GetNumRegions() do
-                            local region = select(ri, cd:GetRegions())
+                        local regions = { cd:GetRegions() }
+                        for ri = 1, #regions do
+                            local region = regions[ri]
                             if region and region.GetObjectType and region:GetObjectType() == "FontString" then
                                 SetBlizzCDMFont(region, fontPath, fontSize, fR, fG, fB)
                                 break

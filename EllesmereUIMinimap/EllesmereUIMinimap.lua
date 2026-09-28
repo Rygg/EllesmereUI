@@ -411,6 +411,39 @@ local function GetAddonBtnSize()
     return mp and mp.addonBtnSize or FLYOUT_BTN_SIZE
 end
 
+-- Frames an addon parents to its button AFTER layout (e.g. ItemRack's set menu,
+-- built on click and pinned to HIGH strata) miss the child pass in
+-- LayoutFlyoutButtons and draw under the DIALOG flyout panel. OnClick post-hook:
+-- re-raise the whole child tree once the owner's handler has run. Namespace-scoped
+-- (EBS field, not a local -- 200-local cap).
+function EBS._RaiseLateFlyoutChildren(btn)
+    if not flyoutPanel or btn:GetParent() ~= flyoutPanel then return end
+    local combat = InCombatLockdown()
+    local function raise(frame, level)
+        for _, child in ipairs({ frame:GetChildren() }) do
+            if not (combat and child:IsProtected()) then
+                child:SetFrameStrata("DIALOG")
+                child:SetFrameLevel(level)
+                raise(child, level + 1)
+            end
+        end
+    end
+    raise(btn, flyoutPanel:GetFrameLevel() + 6)
+end
+
+-- Click-away companion: IsMouseOver only tests the panel's own rect, so a press on
+-- a late child hanging outside it (ItemRack's set menu) hid the grid -- and the
+-- child with it -- before the button-up click landed. Walk the focus frame's
+-- parent chain instead. Namespace-scoped (EBS field, not a local -- 200-local cap).
+function EBS._MouseOverFlyoutChild(panel)
+    local focus = (GetMouseFoci and GetMouseFoci()[1]) or (GetMouseFocus and GetMouseFocus())
+    while focus do
+        if focus == panel then return true end
+        focus = focus.GetParent and focus:GetParent()
+    end
+    return false
+end
+
 local function LayoutFlyoutButtons()
     if not flyoutPanel then return end
     local buttons = CollectFlyoutButtons()
@@ -489,6 +522,10 @@ local function LayoutFlyoutButtons()
         for _, child in ipairs({ btn:GetChildren() }) do
             child:SetFrameStrata("DIALOG")
             child:SetFrameLevel(flyoutPanel:GetFrameLevel() + 6)
+        end
+        if not GetFFD(btn).lateChildHook then
+            GetFFD(btn).lateChildHook = true
+            btn:HookScript("OnClick", EBS._RaiseLateFlyoutChildren)
         end
         local icon = btn.icon or btn.Icon
         if not icon then
@@ -589,7 +626,8 @@ local function EnsureFlyoutPanel()
             self:SetScript("OnUpdate", function(m)
                 if IsMouseButtonDown("LeftButton")
                    and not m:IsMouseOver()
-                   and not (flyoutToggle and flyoutToggle:IsMouseOver()) then
+                   and not (flyoutToggle and flyoutToggle:IsMouseOver())
+                   and not EBS._MouseOverFlyoutChild(m) then
                     m:Hide()
                 end
             end)
@@ -4617,8 +4655,9 @@ local function ApplyMinimap()
         if backdrop then
             local function CheckHousing()
                 local housingAtlas
-                for ri = 1, backdrop:GetNumRegions() do
-                    local rgn = select(ri, backdrop:GetRegions())
+                local regions = { backdrop:GetRegions() }
+                for ri = 1, #regions do
+                    local rgn = regions[ri]
                     if rgn and rgn.GetAtlas then
                         local atlas = rgn:GetAtlas()
                         if atlas and atlas:find("housing") then

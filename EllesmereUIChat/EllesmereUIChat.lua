@@ -4881,8 +4881,9 @@ local function SkinChatFrame(cf)
         -- minimize button is left alone: a separate child object, Blizzard
         -- fades it in with btnFrame's alpha on hover the same as any other
         -- chat window, and its own alpha/mouse state were never touched here.
-        for i = 1, select("#", btnFrame:GetRegions()) do
-            local region = select(i, btnFrame:GetRegions())
+        local regions = { btnFrame:GetRegions() }
+        for i = 1, #regions do
+            local region = regions[i]
             if region:IsObjectType("Texture") then region:SetTexture("") end
         end
     end
@@ -4913,8 +4914,9 @@ local function SkinChatFrame(cf)
             resizeBtn:SetPoint("BOTTOMRIGHT", cf, "BOTTOMRIGHT", -2, 2)
             resizeBtn:SetFrameStrata("HIGH")
             if resizeBtn.GetRegions then
-                for ri = 1, select("#", resizeBtn:GetRegions()) do
-                    local region = select(ri, resizeBtn:GetRegions())
+                local regions = { resizeBtn:GetRegions() }
+                for ri = 1, #regions do
+                    local region = regions[ri]
                     if region and region:IsObjectType("Texture") then
                         region:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\icons\\resize_element.png")
                         region:SetDesaturated(true)
@@ -4970,8 +4972,9 @@ local function SkinChatFrame(cf)
     -- Forever strips it (its bronze frames are ours).
     local stockArt = ns.ChatStockArt()
     if cf.GetRegions and not stockArt then
-        for i = 1, select("#", cf:GetRegions()) do
-            local region = select(i, cf:GetRegions())
+        local regions = { cf:GetRegions() }
+        for i = 1, #regions do
+            local region = regions[i]
             if region and region:IsObjectType("Texture") and not region._euiOwned then
                 region:SetTexture("")
                 region:SetAtlas("")
@@ -4982,8 +4985,9 @@ local function SkinChatFrame(cf)
     if cf.Background and not stockArt then
         cf.Background:SetAlpha(0)
         if cf.Background.GetRegions then
-            for i = 1, select("#", cf.Background:GetRegions()) do
-                local region = select(i, cf.Background:GetRegions())
+            local regions = { cf.Background:GetRegions() }
+            for i = 1, #regions do
+                local region = regions[i]
                 if region and region:IsObjectType("Texture") then
                     region:SetAlpha(0)
                 end
@@ -5004,8 +5008,9 @@ local function SkinChatFrame(cf)
             local fv = ns.ChatForever()
 
             if qbf.GetRegions then
-                for i = 1, select("#", qbf:GetRegions()) do
-                    local region = select(i, qbf:GetRegions())
+                local regions = { qbf:GetRegions() }
+                for i = 1, #regions do
+                    local region = regions[i]
                     if region and region:IsObjectType("Texture") then
                         region:SetAlpha(0)
                     end
@@ -5057,13 +5062,15 @@ local function SkinChatFrame(cf)
                 end
             end
             if qbf.GetChildren then
-                for i = 1, select("#", qbf:GetChildren()) do
-                    local btn = select(i, qbf:GetChildren())
+                local children = { qbf:GetChildren() }
+                for i = 1, #children do
+                    local btn = children[i]
                     if btn and btn:IsObjectType("CheckButton") or (btn and btn:IsObjectType("Button")) then
                         clFilterBtns[#clFilterBtns + 1] = btn
                         if btn.GetRegions then
-                            for j = 1, select("#", btn:GetRegions()) do
-                                local rgn = select(j, btn:GetRegions())
+                            local regions = { btn:GetRegions() }
+                            for j = 1, #regions do
+                                local rgn = regions[j]
                                 if rgn and rgn:IsObjectType("Texture") then
                                     rgn:SetAlpha(0)
                                 end

@@ -1294,6 +1294,13 @@ initFrame:SetScript("OnEvent", function(self)
         local useClassColor = s.detachedPortraitClassColor or false
         local rawBorderSize = s.detachedPortraitBorderSize or 7
         local bExp = 7 - rawBorderSize  -- scale border UP; mask clips inner portion
+        -- Use the resolved art mode so NPC fallbacks keep their own zoom.
+        local classInset
+        if pFrame._previewMode == "class" then
+            local bh = pFrame:GetHeight()
+            if bh < 1 then bh = 46 end
+            classInset = math.floor(bh * 0.08)
+        end
 
         local bR, bG, bB = borderColor.r, borderColor.g, borderColor.b
         if useClassColor then
@@ -1320,9 +1327,14 @@ initFrame:SetScript("OnEvent", function(self)
             end
             -- Reset texture positions to default (detached mode expands them for mask fill)
             if pFrame._previewTex then
-                pFrame._previewTex:ClearAllPoints()
-                pFrame._previewTex:SetPoint("TOPLEFT", pFrame, "TOPLEFT", 0, 0)
-                pFrame._previewTex:SetPoint("BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", 0, 0)
+                if classInset then
+                    ns.UF_SetClassPortraitPoints(pFrame._previewTex, pFrame,
+                        s.portraitClassZoom, classInset, classInset)
+                else
+                    pFrame._previewTex:ClearAllPoints()
+                    pFrame._previewTex:SetPoint("TOPLEFT", pFrame, "TOPLEFT", 0, 0)
+                    pFrame._previewTex:SetPoint("BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", 0, 0)
+                end
             end
             if pFrame._previewModel then
                 pFrame._previewModel:ClearAllPoints()
@@ -1346,9 +1358,14 @@ initFrame:SetScript("OnEvent", function(self)
                 for _, t in ipairs(pFrame._sqBorderTexs) do t:Hide() end
             end
             if pFrame._previewTex then
-                pFrame._previewTex:ClearAllPoints()
-                pFrame._previewTex:SetPoint("TOPLEFT", pFrame, "TOPLEFT", 0, 0)
-                pFrame._previewTex:SetPoint("BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", 0, 0)
+                if classInset then
+                    ns.UF_SetClassPortraitPoints(pFrame._previewTex, pFrame,
+                        s.portraitClassZoom, classInset, classInset)
+                else
+                    pFrame._previewTex:ClearAllPoints()
+                    pFrame._previewTex:SetPoint("TOPLEFT", pFrame, "TOPLEFT", 0, 0)
+                    pFrame._previewTex:SetPoint("BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", 0, 0)
+                end
             end
             if pFrame._previewModel then
                 pFrame._previewModel:ClearAllPoints()
@@ -1423,9 +1440,14 @@ initFrame:SetScript("OnEvent", function(self)
         local oT =  (expand * bh2)
         local oB = -(expand * bh2)
         if pFrame._previewTex then
-            pFrame._previewTex:ClearAllPoints()
-            PP.Point(pFrame._previewTex, "TOPLEFT", pFrame, "TOPLEFT", oL, oT)
-            PP.Point(pFrame._previewTex, "BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", oR, oB)
+            if classInset then
+                ns.UF_SetClassPortraitPoints(pFrame._previewTex, pFrame,
+                    s.portraitClassZoom, classInset + oL, classInset - oT)
+            else
+                pFrame._previewTex:ClearAllPoints()
+                PP.Point(pFrame._previewTex, "TOPLEFT", pFrame, "TOPLEFT", oL, oT)
+                PP.Point(pFrame._previewTex, "BOTTOMRIGHT", pFrame, "BOTTOMRIGHT", oR, oB)
+            end
         end
         if pFrame._previewModel then
             -- 3D models ignore SetClipsChildren, so pin them to the frame bounds.
@@ -1882,6 +1904,13 @@ initFrame:SetScript("OnEvent", function(self)
                 _lastAppliedStyle = style
                 _lastAppliedZoom = zoom
                 _lastAppliedMirror = mirror
+                portraitFrame._previewMode = mode
+                -- The preview reuses one texture for class art and 2D portraits.
+                if mode ~= "class" and portraitTex._classZoomMasked then
+                    portraitTex:RemoveMaskTexture(portraitTex._classZoomMask)
+                    portraitTex._classZoomMask:Hide()
+                    portraitTex._classZoomMasked = nil
+                end
                 if mode == "3d" then
                     portraitFrame:Show()
                     portraitTex:Hide()
@@ -1903,7 +1932,7 @@ initFrame:SetScript("OnEvent", function(self)
                     -- Use current portrait frame height for inset (not captured barH)
                     local curBH = portraitFrame:GetHeight()
                     if curBH < 1 then curBH = barH end
-                    local inset = math.floor(curBH * 0.10)
+                    local inset = math.floor(curBH * 0.08)
                     portraitTex:ClearAllPoints()
                     PP.Point(portraitTex, "TOPLEFT", portraitFrame, "TOPLEFT", inset, -inset)
                     PP.Point(portraitTex, "BOTTOMRIGHT", portraitFrame, "BOTTOMRIGHT", -inset, inset)
@@ -3788,6 +3817,13 @@ initFrame:SetScript("OnEvent", function(self)
                 and ns.UF_LayoutAspectOK ~= nil and ns.UF_LayoutAspectOK() == true
             -- The strip the bar takes under the art (plus the stock text box).
             local cbStrip = 0
+            -- Preview-only clearance for the Pixels cast border's outer art.
+            local cbGap = 0
+            if castbar and ch > 0 and not blizzG and s.castBorderCustom == true
+               and (s.castBorderSize or 1) > 0
+               and (s.castBorderStyle == "pixels" or s.castBorderStyle == "pixels-textured") then
+                cbGap = 6
+            end
             local bh = hh + pvPpExtra
             -- Class power "above" position adds height above health bar ("top" floats outside)
             local cpStyle = (unitKey == "player") and (s.classPowerStyle or "none") or "none"
@@ -4471,7 +4507,7 @@ initFrame:SetScript("OnEvent", function(self)
                     -- Icon-in-width: shift the narrowed bar half an icon width toward
                     -- the icon-free side (left icon -> right, right icon -> left) so the
                     -- footprint stays flush under the frame, as on the real frame.
-                    PP.Point(castbar, "TOP", cbAnchorFrame, "BOTTOM", cbAnchorOff + (ciInWidth and (ciOnRight and -(ciIconW / 2) or (ciIconW / 2)) or 0), 0)
+                    PP.Point(castbar, "TOP", cbAnchorFrame, "BOTTOM", cbAnchorOff + (ciInWidth and (ciOnRight and -(ciIconW / 2) or (ciIconW / 2)) or 0), -cbGap)
                 else
                     castbar:Hide()
                     if castIconFrame then castIconFrame:Hide() end
@@ -5177,7 +5213,7 @@ initFrame:SetScript("OnEvent", function(self)
             end
 
             local btbExtra = (btbFrame and s.bottomTextBar and btbIsAtt) and (s.bottomTextBarHeight or 16) or 0
-            local th = bh2 + btbExtra + (ch > 0 and ch or 0)
+            local th = bh2 + btbExtra + (ch > 0 and ch + cbGap or 0)
             -- Blizzard Style: the visible art (its transparent rows trimmed) plus
             -- the cast bar strip (no text bar) -- unless the bar hangs below the
             -- auras, when the strip is reserved under them instead (auraExtra).
@@ -5225,9 +5261,6 @@ initFrame:SetScript("OnEvent", function(self)
                     PP.Point(castFill, "TOPLEFT", castbar, "TOPLEFT", 1, 0)
                     PP.Point(castFill, "BOTTOMLEFT", castbar, "BOTTOMLEFT", 1, 1)
                 end
-                -- Custom Border Style: the live cast bar's own helper, after the
-                -- scale change (nothing while the opt-in is off).
-                ns.UF_ApplyCastBorder(castbar, s, EllesmereUI.BlizzStyle.Get("unitframes"))
             end
             if castIconFrame then
                 PP.SetBorderSize(castIconFrame, 1)
@@ -5240,6 +5273,11 @@ initFrame:SetScript("OnEvent", function(self)
                 -- through the live helper (nil hands it back to the bar).
                 ns.UF_CastIconPortraitLayout(castIconFrame, castIconFrame._iconTex,
                     (portraitFrame and ns.UF_CastIconOnPortrait(unitKey, s)) and portraitFrame or nil, s)
+            end
+            -- Share border geometry, icon decoration and seam cleanup with live
+            -- frames, after the scale and portrait placement have been applied.
+            if castbar then
+                ns.UF_ApplyCastBorder(castbar, s, EllesmereUI.BlizzStyle.Get("unitframes"), unitKey, castIconFrame)
             end
 
             -- Re-apply PixelUtil sizing to every element so it stays pixel-perfect at
@@ -5300,6 +5338,10 @@ initFrame:SetScript("OnEvent", function(self)
             -- this panel repaints itself on a scale change).
             if power then
                 ns.UpdatePowerSeam(power, s, EllesmereUI.BlizzStyle.Get("unitframes"), true)
+            end
+            if s.portraitSeparator or pf._portraitSeparator then
+                ns.UpdatePortraitSeparator(pf, portraitFrame, s, effectiveSide,
+                    sp and isAttached, EllesmereUI.BlizzStyle.Get("unitframes"), true)
             end
 
             -- Re-snap BTB
@@ -6913,8 +6955,9 @@ initFrame:SetScript("OnEvent", function(self)
             suffix:SetTextColor(1, 1, 1, 0.35)
             suffix:SetText(EllesmereUI.L("(Applies to All Units)"))
             local lbl
-            for i = 1, decRow._leftRegion:GetNumRegions() do
-                local reg = select(i, decRow._leftRegion:GetRegions())
+            local regions = { decRow._leftRegion:GetRegions() }
+            for i = 1, #regions do
+                local reg = regions[i]
                 if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == "Show Decimal on Health Text" then
                     lbl = reg; break
                 end
@@ -7276,11 +7319,32 @@ initFrame:SetScript("OnEvent", function(self)
                 },
             })
         end
-        -- Cog on Portrait Mode: the Non-Player Portrait opt-in (its toggle
-        -- rebuilds the page to show or drop that row below).
+        -- Portrait settings; the separator is offered only for attached portraits.
         if not EllesmereUI._prebuilding then
+            local rows = {
+                { type="toggle", label="Custom Non-Player Portrait",
+                  tooltip="Pick what NPCs show in Class art instead of their 2D portrait.",
+                  get=function() return SVal("portraitNonPlayerOn", false) end,
+                  set=function(v)
+                      SSet("portraitNonPlayerOn", v or nil)
+                      EllesmereUI:RefreshPage(true)
+                  end },
+            }
+            if SVal("portraitStyle", "attached") == "attached" then
+                rows[#rows + 1] = { type="toggle", label="Vertical Border Separator",
+                    tooltip="Draws the selected border style between the attached portrait and the bars.",
+                    disabled=function()
+                        return SVal("borderSize", 1) <= 0
+                            or not EllesmereUI.GetBorderCompanion(SGet("borderTexture") or "solid", "sepV")
+                    end,
+                    disabledTooltip="This option requires the Pixels or Pixels Textured border style and a Border Size above 0.",
+                    rawTooltip=true,
+                    get=function() return SVal("portraitSeparator", false) end,
+                    set=function(v) SSet("portraitSeparator", v or nil) end,
+                }
+            end
             EllesmereUI.BuildInlineCog(sharedPortraitModeRow._leftRegion, {
-                title = "Non-Player Portrait",
+                title = "Portrait Settings",
                 disabled = function()
                     return EllesmereUI.BlizzStyle.Get("unitframes") or SVal("portraitStyle", "attached") == "none"
                 end,
@@ -7290,15 +7354,7 @@ initFrame:SetScript("OnEvent", function(self)
                 end,
                 rawTooltip = function() return not EllesmereUI.BlizzStyle.Get("unitframes") end,
                 requireState = "disabled",
-                rows = {
-                    { type="toggle", label="Custom Non-Player Portrait",
-                      tooltip="Pick what NPCs show in Class art instead of their 2D portrait.",
-                      get=function() return SVal("portraitNonPlayerOn", false) end,
-                      set=function(v)
-                          SSet("portraitNonPlayerOn", v or nil)
-                          EllesmereUI:RefreshPage(true)
-                      end },
-                },
+                rows = rows,
             })
         end
         -- Sync icon: Portrait Mode (Art Style)
@@ -7480,6 +7536,12 @@ initFrame:SetScript("OnEvent", function(self)
                     { type="slider", label="3D Zoom", min=100, max=300, step=1,
                       get=function() return SVal("portrait3dZoom", 100) end,
                       set=function(v) SSet("portrait3dZoom", v); UpdatePreview() end },
+                    { type="slider", label="Class Zoom", min=50, max=200, step=1,
+                      disabled=function() return EllesmereUI.BlizzStyle.Get("unitframes") end,
+                      disabledTooltip=function() return EllesmereUI.BlizzStyle.Label("unitframes") end,
+                      requireState="disabled",
+                      get=function() return SVal("portraitClassZoom", 100) end,
+                      set=function(v) SSet("portraitClassZoom", v); UpdatePreview() end },
                     -- 2D and class art only; the stock styles keep their full art.
                     { type="toggle", label="Mirror Portrait",
                       tooltip="Flips the portrait horizontally so it faces the other way.",
@@ -10558,6 +10620,16 @@ initFrame:SetScript("OnEvent", function(self)
             EllesmereUI.BuildInlineCog(rgn, {
                 title = "Cast Icon",
                 rows = {
+                    { type = "toggle", label = "Icon Border",
+                      tooltip = "Use the cast bar's border style, size and color around the icon.",
+                      disabled = function() return EllesmereUI.BlizzStyle.Get("unitframes") or not GetShowIcon() or IconOnPortrait() end,
+                      disabledTooltip = "Requires Show Icon beside the cast bar and the EllesmereUI style.",
+                      requireState = "disabled",
+                      get = function() return UNIT_DB_MAP[selectedUnit]().castIconBorder == true end,
+                      set = function(v)
+                          UNIT_DB_MAP[selectedUnit]().castIconBorder = v
+                          ReloadAndUpdate(); UpdatePreview()
+                      end },
                     { type = "toggle", label = "Make Icon Part of the Bar",
                       tooltip = "This makes it so the width of the cast bar includes the icon, rather than placing it to the left of the cast bars width.",
                       -- The stock styles count a shown icon as part of the bar
@@ -10581,6 +10653,19 @@ initFrame:SetScript("OnEvent", function(self)
                           else
                               UNIT_DB_MAP[selectedUnit]().castbarIconInWidth = v
                           end
+                          ReloadAndUpdate(); UpdatePreview()
+                      end },
+                    { type = "toggle", label = "Vertical Separator",
+                      tooltip = "Draw a divider between the integrated icon and the bar, using the cast bar's border appearance.",
+                      disabled = function()
+                          return EllesmereUI.BlizzStyle.Get("unitframes")
+                              or not ns.UF_CastIconInWidth(selectedUnit, UNIT_DB_MAP[selectedUnit]())
+                      end,
+                      disabledTooltip = "Requires Show Icon and Make Icon Part of the Bar, with the EllesmereUI style.",
+                      requireState = "disabled",
+                      get = function() return UNIT_DB_MAP[selectedUnit]().castIconSeparator == true end,
+                      set = function(v)
+                          UNIT_DB_MAP[selectedUnit]().castIconSeparator = v
                           ReloadAndUpdate(); UpdatePreview()
                       end },
                     { type = "toggle", label = "Show Icon on Right",
@@ -16794,8 +16879,9 @@ initFrame:SetScript("OnEvent", function(self)
         do
             activateBtn = select(1, activateBtnFrame:GetChildren())
             if activateBtn then
-                for i = 1, activateBtn:GetNumRegions() do
-                    local rgn = select(i, activateBtn:GetRegions())
+                local regions = { activateBtn:GetRegions() }
+                for i = 1, #regions do
+                    local rgn = regions[i]
                     if rgn and rgn.GetText and rgn:GetText() then
                         activateBtnLbl = rgn; break
                     end
@@ -17964,6 +18050,13 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUI.BuildInlineCog(growthRow._leftRegion, {
                     title = "Cast Icon",
                     rows = {
+                        { type = "toggle", label = "Icon Border",
+                          tooltip = "Use the cast bar's border style, size and color around the icon.",
+                          disabled = function() return EllesmereUI.BlizzStyle.Get("unitframes") or B.showCastIcon == false end,
+                          disabledTooltip = "Requires Show Icon and the EllesmereUI style.",
+                          requireState = "disabled",
+                          get = function() return B.castIconBorder == true end,
+                          set = function(v) B.castIconBorder = v; ReloadAndUpdate() end },
                         { type = "toggle", label = "Make Icon Part of the Bar",
                           tooltip = "This makes it so the width of the cast bar includes the icon, rather than placing it to the left of the cast bars width.",
                           -- The stock styles count a shown icon as part of the bar
@@ -17976,6 +18069,15 @@ initFrame:SetScript("OnEvent", function(self)
                               return B.castbarIconInWidth ~= false
                           end,
                           set = function(v) B.castbarIconInWidth = v; ReloadAndUpdate() end },
+                        { type = "toggle", label = "Vertical Separator",
+                          tooltip = "Draw a divider between the integrated icon and the bar, using the cast bar's border appearance.",
+                          disabled = function()
+                              return EllesmereUI.BlizzStyle.Get("unitframes") or not ns.UF_CastIconInWidth("boss", B)
+                          end,
+                          disabledTooltip = "Requires Show Icon and Make Icon Part of the Bar, with the EllesmereUI style.",
+                          requireState = "disabled",
+                          get = function() return B.castIconSeparator == true end,
+                          set = function(v) B.castIconSeparator = v; ReloadAndUpdate() end },
                         { type = "toggle", label = "Show Icon on Right",
                           tooltip = "Place the cast icon on the right side of the bar instead of the left.",
                           get = function() return B.castbarIconRight == true end,
