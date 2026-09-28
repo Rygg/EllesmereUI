@@ -307,7 +307,12 @@ end
 local function BuildBuffBarSubtitle(bar)
     local extraCount = bar.spells and #bar.spells or 0
     local nHidden = 0
-    if bar.negFilters then for _ in pairs(bar.negFilters) do nHidden = nHidden + 1 end end
+    -- Presets only the other client offers are not listed here, so they do not count.
+    if bar.negFilters then
+        for fid in pairs(bar.negFilters) do
+            if not ns.PAB_HiddenPresetFilter(fid) then nHidden = nHidden + 1 end
+        end
+    end
 
     if bar.showAllBuffs ~= false or bar.hasDuration == true then
         local txt = (bar.showAllBuffs ~= false) and L("All Buffs") or L("Has Duration")
@@ -461,7 +466,17 @@ local function BuildAssignedBuffsFields(frame, fontPath, sy, cfg, apply, isDefau
     -- displays nothing.
     local function BuffBarHasContent()
         if not ns.PAB_BuffBarHasContent then return true end
-        return ns.PAB_BuffBarHasContent(cfg, isDefault) and true or false
+        if not ns.PAB_BuffBarHasContent(cfg, isDefault) then return false end
+        -- WoW Forever: visibleOnly counts only the Show-lane filters this client
+        -- lists, so a bar whose sole content is a hidden retail preset warns.
+        local visibleOnly = EllesmereUI.IS_FOREVER and cfg.filters
+            and cfg.showAllBuffs == false and cfg.hasDuration ~= true
+            and not (cfg.spells and #cfg.spells > 0)
+        if not visibleOnly then return true end
+        for fid in pairs(cfg.filters) do
+            if not ns.PAB_HiddenPresetFilter(fid) then return true end
+        end
+        return false
     end
 
     -- LEFT: Filters checkbox dropdown, "Edit Filters" pinned top action.
@@ -628,7 +643,7 @@ local function BuildAssignedBuffsFields(frame, fontPath, sy, cfg, apply, isDefau
                     local f = ns.PAB_GetFilter and ns.PAB_GetFilter(fid)
                     if f then
                         for id, on in pairs(f.spells) do
-                            if on then covered[id] = true end
+                            if on and not ns.PAB_OtherClientSpell(f, id) then covered[id] = true end
                         end
                     end
                 end
@@ -1720,16 +1735,16 @@ local function BuildFxEffects(frame, sy, cfg, apply)
         end
 
         -- Row 1: Filters | Icon Glow (shared glow controls)
-        local glowDesc = GO and GO.PrefixSite(function() return e end, "glow", "engine", apply)
+        local glowDesc = GO.PrefixSite(function() return e end, "glow", "engine", apply)
         -- The half next to Filters is too narrow for the color swatches.
-        if glowDesc then glowDesc.colorInCog = true end
+        glowDesc.colorInCog = true
         local row
         row, hh = W:DualRow(frame, sy,
             { type = "dropdown", text = "Filters",
               values = { __placeholder = "..." }, order = { "__placeholder" },
               getValue = function() return "__placeholder" end,
               setValue = function() end },
-            glowDesc and GO.DropdownSpec(glowDesc, "Icon Glow") or { type = "label", text = "" }); sy = sy - hh
+            GO.DropdownSpec(glowDesc, "Icon Glow")); sy = sy - hh
         do
             local rgn = row._leftRegion
             if rgn._control then rgn._control:Hide() end
@@ -1746,7 +1761,7 @@ local function BuildFxEffects(frame, sy, cfg, apply)
             rgn._control = cbDD; rgn._lastInline = nil
             if cbRefresh then EllesmereUI.RegisterWidgetRefresh(cbRefresh) end
         end
-        if glowDesc then GO.AttachInline(row._rightRegion, glowDesc) end
+        GO.AttachInline(row._rightRegion, glowDesc)
 
         -- Row 2: Border (+ swatch) | Size (icon size for the matched
         -- filters; 0 = the bar's own icon size).
@@ -2373,7 +2388,8 @@ function ns.PABMP_ShowFilterEditor()
             local out = {}
             for i = 1, #universe do
                 local id = universe[i]
-                if sel.spells[id] == nil then
+                -- An id kept only for the other client is not on the filter here.
+                if sel.spells[id] == nil or ns.PAB_OtherClientSpell(sel, id) then
                     local nm2 = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(id)
                     out[#out + 1] = {
                         key = id, label = nm2 or tostring(id), noCheck = true,
@@ -2445,7 +2461,10 @@ function ns.PABMP_ShowFilterEditor()
     -- the user toggles them from.
     local hints = ns.PAB_SPELL_CLASS_HINTS or {}
     local allIds = {}
-    for id in pairs(sel.spells) do allIds[#allIds + 1] = id end
+    for id in pairs(sel.spells) do
+        -- Ids kept only for the other client (ns.PAB_OtherClientSpell) get no row.
+        if not ns.PAB_OtherClientSpell(sel, id) then allIds[#allIds + 1] = id end
+    end
     table.sort(allIds)
     local byClass, customList = {}, {}
     local seenNames = {}
@@ -2746,6 +2765,15 @@ function ns.PABMP_BuildPage(pageName, parent, yOffset)
         and not (type(pabSpecSel) == "string" and pabSpecSel:match("^spec%d")) then
         pabSpecSel = "allspecs"
     end
+    -- WoW Forever lists All Specs and one row per class, keyed to the bucket
+    -- that class renders now: a group view resets to All Specs and a spec
+    -- view follows its class's current bucket (it moves with the profile and
+    -- when that bucket loses its last bar or per-spec disable).
+    if EllesmereUI.IS_FOREVER and pabSpecSel ~= "allspecs" then
+        local m = type(pabSpecSel) == "string" and pabSpecSel:match("^spec(%d+)$")
+        local cls = m and EllesmereUI.SpecClassOf(tonumber(m))
+        pabSpecSel = (cls and ns.PAB_ForeverKey(cls)) or "allspecs"
+    end
     local buffBars = ns.PAB_BucketBars and ns.PAB_BucketBars(true, pabSpecSel) or {}
     local debuffBars = ns.PAB_BucketBars and ns.PAB_BucketBars(false, pabSpecSel) or {}
 
@@ -2942,8 +2970,9 @@ function ns.PABMP_BuildPage(pageName, parent, yOffset)
         fixedY = fixedY - 27
 
         -- Roster shared with the right-click "Add To" menu (the menu
-        -- rebuilds it lazily per open).
-        local specDDValues, specDDOrder, specDDIcons = EllesmereUI.BuildSpecBucketRoster()
+        -- rebuilds it lazily per open). WoW Forever: All Specs, then one
+        -- row per class keyed to the bucket that class renders.
+        local specDDValues, specDDOrder, specDDIcons = EllesmereUI.BuildSpecBucketRoster(nil, ns.PAB_ForeverKey)
         specDDValues._menuOpts = {
             maxHeight = 300,
             icon = function(key) return specDDIcons[key] end,
@@ -3136,7 +3165,7 @@ function ns.PABMP_BuildPage(pageName, parent, yOffset)
                     EllesmereUI.ShowPickMenu(tileFrame, {
                         title = L("Add To"),
                         fontPath = fontPath,
-                        items = EllesmereUI.SpecBucketMenuItems(pabSpecSel),
+                        items = EllesmereUI.SpecBucketMenuItems(pabSpecSel, nil, ns.PAB_ForeverKey),
                         onPick = function(key)
                             local nb = ns.PAB_CopyCustomBar
                                 and ns.PAB_CopyCustomBar(true, bar, key)
@@ -3241,7 +3270,7 @@ function ns.PABMP_BuildPage(pageName, parent, yOffset)
                     EllesmereUI.ShowPickMenu(tileFrame, {
                         title = L("Add To"),
                         fontPath = fontPath,
-                        items = EllesmereUI.SpecBucketMenuItems(pabSpecSel),
+                        items = EllesmereUI.SpecBucketMenuItems(pabSpecSel, nil, ns.PAB_ForeverKey),
                         onPick = function(key)
                             local nb = ns.PAB_CopyCustomBar
                                 and ns.PAB_CopyCustomBar(false, bar, key)

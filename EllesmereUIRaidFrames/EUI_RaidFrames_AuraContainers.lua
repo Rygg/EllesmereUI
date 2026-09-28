@@ -138,6 +138,9 @@ local function DmFxBlockFor(list, cat)
 end
 
 local DM_GLOW_SPEC = {}
+-- Engine glow families the DM and BM Icon Glow menus offer (Pixel and the
+-- flipbooks, no Blizzard Border): a prewarm builds only these.
+local ICON_GLOW_NEED = { ants = true, flip = true }
 local function ApplyDmFx(button, d, style)
     local cat = d.dmCat
     if not cat and style.ccGroup then cat = "cc" end
@@ -145,8 +148,7 @@ local function ApplyDmFx(button, d, style)
 
     -- Icon Glow (engine host): C-side animations only, identical in and out of secret.
     local Glows = EllesmereUI.Glows
-    local spec = e and Glows and Glows.SpecFromPrefix
-        and Glows.SpecFromPrefix(DM_GLOW_SPEC, e, "glow", 1.0, 0.776, 0.376)
+    local spec = e and Glows.SpecFromPrefix(DM_GLOW_SPEC, e, "glow", 1.0, 0.776, 0.376)
     local gov = d.dmFxgHost
     local sz = style.width or 18
     if spec then
@@ -162,12 +164,12 @@ local function ApplyDmFx(button, d, style)
             if d.stackCarrier then d.stackCarrier:SetFrameLevel(base + 5) end
             gov:EnableMouse(false)
             d.dmFxgHost = gov
-            Glows.PrewarmEngineHost(gov, sz, style.height or sz)
+            Glows.PrewarmEngineHost(gov, sz, style.height or sz, ICON_GLOW_NEED)
         end
         gov:Show()
         Glows.StartSpecGlow(gov, spec, sz, style.height or sz, "engine")
     elseif gov then
-        if gov._euiGlowActive and Glows and Glows.StopGlow then Glows.StopGlow(gov) end
+        if gov._euiGlowActive then Glows.StopGlow(gov) end
         gov:Hide()
     end
 
@@ -301,6 +303,18 @@ end
 local function CK(c)
     local r, g, b = ColorParts(c, 0, 0, 0)
     return string.format("%.3f,%.3f,%.3f", r, g, b)
+end
+
+-- A Class-mode glow draws the palette's class colour, so that colour is an
+-- input of every glow print (a Colors page edit must restyle); "" for every
+-- other mode. The colour last printed feeds the colours-changed hook below
+-- RFC_ReloadAll. On ns: the Debuff Manager's prints use it too.
+function ns.RF_GlowClassFP(mode, classFlag)
+    local G = EllesmereUI.Glows
+    if G.DeriveColorMode(mode, classFlag) ~= "class" then return "" end
+    local r, g, b = G.ResolveColor("class")
+    ns._rfGlowClassR, ns._rfGlowClassG, ns._rfGlowClassB = r, g, b
+    return string.format("cc%.3f,%.3f,%.3f", r, g, b)
 end
 
 -- sizeOverride: the dispellable-location styles reuse the whole debuff
@@ -626,13 +640,11 @@ local function ApplyRFDispelSlot(button, dd, style)
     else -- "fill"
         tex:Show()
         local fillTex = health.GetStatusBarTexture and health:GetStatusBarTexture()
-        -- Both corners come off the fill texture: a TOPLEFT-of-bar pair only tracks a
-        -- left-to-right bar, so a vertical fill spanned the whole frame like "full".
-        if fillTex then
-            tex:SetAllPoints(fillTex)
-        else
-            tex:SetAllPoints(health)
-        end
+        -- The current-health area, off the fill texture's edges (a TOPLEFT-of-bar
+        -- pair alone only tracks a left-to-right bar): the fill itself, or under
+        -- Inverted Fill the rest of the bar up to the fill's HP edge, so a unit at
+        -- full health still shows the wash.
+        ns.RF_AnchorCurHealth(tex, health, fillTex, style.fillVert, style.fillInvert)
         tex:SetColorTexture(r, g, b, alpha)
         tex:SetVertexColor(1, 1, 1, 1)
     end
@@ -767,6 +779,9 @@ local function BuildDispelStyle(s)
         iconOffX = s.dispelIconOffsetX or 0,
         iconOffY = s.dispelIconOffsetY or 0,
         uniformAnchors = s.powerUniformAnchors == true,
+        -- The fill wash's anchors follow the fill direction (RF_AnchorCurHealth).
+        fillVert = ns.RF_IsVerticalFill(s),
+        fillInvert = ns.RF_IsInvertedFill(s),
         typeColors = typeColors,
         customBorder = customBorder,
         applyExtra = ApplyRFDispelSlot,
@@ -832,6 +847,9 @@ local function DispelStyleFP(s)
         s.dispelIconSize, s.dispelIconPosition, s.dispelIconOffsetX, s.dispelIconOffsetY,
         CKA(s.dispelColorMagic), CKA(s.dispelColorCurse), CKA(s.dispelColorDisease),
         CKA(s.dispelColorPoison), CKA(s.dispelColorBleed), s.powerUniformAnchors,
+        -- The fill wash follows the fill direction (BuildDispelStyle); the axis
+        -- only moves it under Inverted Fill.
+        ns.RF_IsInvertedFill(s), ns.RF_IsInvertedFill(s) and ns.RF_IsVerticalFill(s),
         -- Color Custom Borders copies the frame border (strata: a strata change
         -- re-stacks child levels), so those inputs count, only while it is on.
         s.dispelCustomBorder == true and FP(s.borderSize, s.borderTexture, s.borderSizePx,
@@ -1161,8 +1179,12 @@ local function BmSegments(ind, spells)
     local ordered, seen = {}, {}
     local so = ind.spellOrder
     if so then
+        -- WoW Forever: an entry saved under a rank alternate orders its
+        -- family's primary (the id the resolved list holds). nil elsewhere.
+        local ap = ns.BM2_ForeverAltPrimary
         for k = 1, #so do
             local sid = so[k]
+            if ap then sid = ap[sid] or sid end
             if present[sid] and not seen[sid] and #ordered < BM_ORDER_CAP then
                 seen[sid] = true
                 ordered[#ordered + 1] = sid
@@ -1245,7 +1267,6 @@ end
 local BM_GLOW_SPEC = {}
 local function ApplyBmIconGlow(button, dd, style)
     local Glows = EllesmereUI.Glows
-    if not (Glows and Glows.SpecFromPrefix) then return end
     local spec = style.bmGlowInd
         and Glows.SpecFromPrefix(BM_GLOW_SPEC, style.bmGlowInd, "displayGlow", 1.0, 0.776, 0.376)
     if spec then
@@ -1262,10 +1283,10 @@ local function ApplyBmIconGlow(button, dd, style)
             end
             gov:EnableMouse(false)
             dd.bmGlow = gov
-            Glows.PrewarmEngineHost(gov, sz, style.height or sz)
+            Glows.PrewarmEngineHost(gov, sz, style.height or sz, ICON_GLOW_NEED)
         end
         Glows.StartSpecGlow(gov, spec, sz, style.height or sz, "engine")
-    elseif dd.bmGlow and dd.bmGlow._euiGlowActive and Glows.StopGlow then
+    elseif dd.bmGlow and dd.bmGlow._euiGlowActive then
         Glows.StopGlow(dd.bmGlow)
     end
 end
@@ -1581,17 +1602,13 @@ local function BmEffectInit(button, dd, style, ind, health)
         -- sublevels (above fill at 0), staying BELOW heal absorb/prediction (health +1)
         -- and shield bars (+3). At +1 this tied heal absorb on strata+level+layer+
         -- sublevel, so paint order fell to creation order and the tint blended over an
-        -- opaque heal absorb. Anchored to the fill texture so only the filled portion
-        -- tints, not empty/missing health.
+        -- opaque heal absorb. Anchored to the current-health area (the fill texture, or
+        -- the rest of the bar under Inverted Fill) so missing health never tints.
         button:SetFrameLevel(health:GetFrameLevel())
         dd.bmHealthBar = health  -- apply pass borrows this bar's fill texture
         dd.tex = button:CreateTexture(nil, "ARTWORK", nil, 2)
-        local fillTex = health.GetStatusBarTexture and health:GetStatusBarTexture()
-        if fillTex then
-            dd.tex:SetAllPoints(fillTex)
-        else
-            dd.tex:SetAllPoints(health)
-        end
+        ns.RF_AnchorCurHealth(dd.tex, health,
+            health.GetStatusBarTexture and health:GetStatusBarTexture())
         ns.RF_RegisterBarTint(health, dd.tex, nil, "bm")
     elseif ind.type == "bgcolor" then
         -- Background Color: whole health area, ARTWORK -2 = below fill (sublevel 0)
@@ -2032,7 +2049,8 @@ local function BmVisualKey(kind, ind, size, font, spellID)
             ind.displayGlowR, ind.displayGlowG, ind.displayGlowB, ind.displayGlowColorMode,
             ind.displayGlowLines, ind.displayGlowThickness, ind.displayGlowSpeed,
             ind.displayGlowBackground, ind.displayGlowBackgroundR,
-            ind.displayGlowBackgroundG, ind.displayGlowBackgroundB)
+            ind.displayGlowBackgroundG, ind.displayGlowBackgroundB,
+            ns.RF_GlowClassFP(ind.displayGlowColorMode, ind.displayGlowClassColor))
     end
     if kind == "square" then
         return FP(font, size, CK(BmSquareColor(ind, spellID)), ind.showDuration, ind.indBorderSize,
@@ -2044,7 +2062,8 @@ local function BmVisualKey(kind, ind, size, font, spellID)
             ind.displayGlowR, ind.displayGlowG, ind.displayGlowB, ind.displayGlowColorMode,
             ind.displayGlowLines, ind.displayGlowThickness, ind.displayGlowSpeed,
             ind.displayGlowBackground, ind.displayGlowBackgroundR,
-            ind.displayGlowBackgroundG, ind.displayGlowBackgroundB)
+            ind.displayGlowBackgroundG, ind.displayGlowBackgroundB,
+            ns.RF_GlowClassFP(ind.displayGlowColorMode, ind.displayGlowClassColor))
     end
     if kind == "bar" then
         -- orientation is the one geometry field that is ALSO a visual: it swaps
@@ -3232,6 +3251,29 @@ function ns.RFC_ReloadAll()
             end
         end
     end
+end
+
+-- Colors page edits (swatches, darken, resets, profile switches) all end in
+-- ApplyColorsToOUF. Once a Class-mode glow was printed (ns.RF_GlowClassFP), a
+-- changed class colour re-runs the fingerprinted reload, which restyles only
+-- the glows whose print changed. Calls in one frame (a profile switch can
+-- make two) collapse into one check on the next frame: the flush frame stays
+-- hidden until a call and hides itself before working.
+do
+    local flush = CreateFrame("Frame")
+    flush:Hide()
+    flush:SetScript("OnUpdate", function(self)
+        self:Hide()
+        local r0 = ns._rfGlowClassR
+        if r0 == nil then return end
+        local r, g, b = EllesmereUI.Glows.ResolveColor("class")
+        if r ~= r0 or g ~= ns._rfGlowClassG or b ~= ns._rfGlowClassB then
+            ns.RFC_ReloadAll()
+        end
+    end)
+    hooksecurefunc(EllesmereUI, "ApplyColorsToOUF", function()
+        if ns._rfGlowClassR ~= nil then flush:Show() end
+    end)
 end
 
 -- Full assist-gate sweep over every live button. Per-unit matching is

@@ -384,23 +384,23 @@ local function BuildFxEffects(frame, sy, fxOwner)
         end
 
         -- Row 1: Filters | Icon Glow (shared glow controls)
-        local glowDesc = GO and GO.PrefixSite(function() return e end, "glow", "engine", DmApply)
+        local glowDesc = GO.PrefixSite(function() return e end, "glow", "engine", DmApply)
         -- The half next to Filters is too narrow for the color swatches.
-        if glowDesc then glowDesc.colorInCog = true end
+        glowDesc.colorInCog = true
         local row
         row, hh = W:DualRow(frame, sy,
             { type = "dropdown", text = "Filters",
               values = { __placeholder = "..." }, order = { "__placeholder" },
               getValue = function() return "__placeholder" end,
               setValue = function() end },
-            glowDesc and GO.DropdownSpec(glowDesc, "Icon Glow") or { type = "label", text = "" }); sy = sy - hh
+            GO.DropdownSpec(glowDesc, "Icon Glow")); sy = sy - hh
         do
             -- The SAME filter dropdown as Assigned Debuffs / tile panes
             -- (shared items incl. the split dispel entries + tooltips).
             if not e.filters then e.filters = {} end
             BuildFilterCBDropdown(row._leftRegion, e.filters, DmTable() or {})
         end
-        if glowDesc then GO.AttachInline(row._rightRegion, glowDesc) end
+        GO.AttachInline(row._rightRegion, glowDesc)
 
         -- Row 2: Border (+ swatch, the DISPLAY-section Border style) | Size
         -- (icon size for the matched filters; 0 = the grid's own size).
@@ -1164,7 +1164,7 @@ local function BuildTileDetail(frame, fontPath, t)
     -- Frame Glow: shared glow controls over the tile's own keys (always on: no None).
     local GO = EllesmereUI.GlowOptions
     local glowDesc
-    if t.type == "glow" and GO then
+    if t.type == "glow" then
         glowDesc = TileGlowDesc(t, DmApply)
     end
     local catRow
@@ -1310,7 +1310,19 @@ local function BuildTileDetail(frame, fontPath, t)
             { type = "slider", text = "Opacity", min = 5, max = 100, step = 1,
               getValue = function() return t.opacity or 45 end,
               setValue = function(v) TSet("opacity", v) end },
-            { type = "label", text = "" }); sy = sy - hh
+            EllesmereUI.MaxDurationDropdown(
+                function() return t.maxDurSec end,
+                function(v) t.maxDurSec = v end,
+                DmApply)); sy = sy - hh
+    elseif t.type == "glow" then
+        -- The runtime folds the tile's cap into its effect filter
+        -- (EffectFilterForTile), as for the grid tiles.
+        _, hh = W:DualRow(frame, sy,
+            EllesmereUI.MaxDurationDropdown(
+                function() return t.maxDurSec end,
+                function(v) t.maxDurSec = v end,
+                DmApply),
+            EllesmereUI.BlankRowCfg()); sy = sy - hh
     end
     return sy
 end
@@ -1367,7 +1379,7 @@ local function DmPvClick(self)
     -- grid is an All Specs row, inherited in every concrete spec view.
     if id == "base" then
         if dmSpecSel ~= "allspecs" and ns.BM_InheritedGroupsFor
-            and ns.BM_InheritedGroupsFor(dmSpecSel) then
+            and ns.BM_InheritedGroupsFor(dmSpecSel, true) then
             dmInhSel = { group = "allspecs", id = "base" }
             EllesmereUI:RefreshPage(true)
             return
@@ -1379,7 +1391,7 @@ local function DmPvClick(self)
             if own[i].id == id then inOwn = true break end
         end
         if not inOwn then
-            local inhG = ns.BM_InheritedGroupsFor and ns.BM_InheritedGroupsFor(dmSpecSel)
+            local inhG = ns.BM_InheritedGroupsFor and ns.BM_InheritedGroupsFor(dmSpecSel, true)
             if inhG then
                 for gi = 1, #inhG do
                     local gl = ns.DM_BucketTiles and ns.DM_BucketTiles(inhG[gi])
@@ -1416,7 +1428,7 @@ function ns.DMP_RefreshPreview()
     -- own list -- the preview mirrors what that spec renders.
     local tiles = {}
     do
-        local inhG = ns.BM_InheritedGroupsFor and ns.BM_InheritedGroupsFor(dmSpecSel)
+        local inhG = ns.BM_InheritedGroupsFor and ns.BM_InheritedGroupsFor(dmSpecSel, true)
         if inhG then
             for gi = 1, #inhG do
                 local gl = ns.DM_BucketTiles and ns.DM_BucketTiles(inhG[gi])
@@ -1678,7 +1690,7 @@ function ns.DMP_RefreshPreview()
     local baseShown
     if dmSpecSel == "allspecs" then
         baseShown = true
-    elseif ns.BM_InheritedGroupsFor and ns.BM_InheritedGroupsFor(dmSpecSel) then
+    elseif ns.BM_InheritedGroupsFor and ns.BM_InheritedGroupsFor(dmSpecSel, true) then
         baseShown = not (ns.DM_BaseDisabled and ns.DM_BaseDisabled(dmSpecSel))
     end
     if baseShown then
@@ -1887,11 +1899,20 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
         and not (type(dmSpecSel) == "string" and dmSpecSel:match("^spec%d")) then
         dmSpecSel = "allspecs"
     end
+    -- WoW Forever lists All Specs and one row per class, keyed to the bucket
+    -- that class renders now: a group view resets to All Specs and a spec
+    -- view follows its class's current bucket (it moves with the profile and
+    -- when that bucket loses its last tile, per-spec disable or Base Icons off).
+    if EllesmereUI.IS_FOREVER and dmSpecSel ~= "allspecs" then
+        local m = type(dmSpecSel) == "string" and dmSpecSel:match("^spec(%d+)$")
+        local cls = m and EllesmereUI.SpecClassOf(tonumber(m))
+        dmSpecSel = (cls and ns.DM_ForeverKey and ns.DM_ForeverKey(cls)) or "allspecs"
+    end
     local tiles = (ns.DM_BucketTiles and ns.DM_BucketTiles(dmSpecSel)) or {}
 
     -- Group buckets this view inherits from (concrete "spec<ID>" views
     -- only): their tiles lead the sidebar as read-only rows.
-    local inhGroups = ns.BM_InheritedGroupsFor and ns.BM_InheritedGroupsFor(dmSpecSel) or nil
+    local inhGroups = ns.BM_InheritedGroupsFor and ns.BM_InheritedGroupsFor(dmSpecSel, true) or nil
 
     -- The Base Icons grid is an All Specs indicator: OWN in the All Specs
     -- view, INHERITED (read-only, per-spec disable pill) in concrete spec
@@ -2093,7 +2114,7 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
                 EllesmereUI.ShowPickMenu(tileFrame, {
                     title = L("Add To"),
                     fontPath = fontPath,
-                    items = EllesmereUI.SpecBucketMenuItems(dmSpecSel),
+                    items = EllesmereUI.SpecBucketMenuItems(dmSpecSel, nil, ns.DM_ForeverKey),
                     onPick = function(key)
                         if ns.DM_CopyTile and ns.DM_CopyTile(t, key) then
                             DmApply()
@@ -2447,7 +2468,7 @@ function ns.DMP_BuildPage(pageName, parent, yOffset)
         local specCenterX = pvSplitW + specSplitW / 2
         -- Roster shared with the right-click "Add To" menu (the menu
         -- rebuilds it lazily per open).
-        local specDDValues, specDDOrder, specDDIcons = EllesmereUI.BuildSpecBucketRoster()
+        local specDDValues, specDDOrder, specDDIcons = EllesmereUI.BuildSpecBucketRoster(nil, ns.DM_ForeverKey)
         specDDValues._menuOpts = {
             maxHeight = 300,
             icon = function(key) return specDDIcons[key] end,
@@ -3003,11 +3024,32 @@ function ns.BMP_ShowFilterEditor()
         function()
             local f = (ns.BM2_GetFilter and ns.BM2_GetFilter(sel.id)) or sel
             local universe = (ns.BM2_AllPresetSpells and ns.BM2_AllPresetSpells()) or {}
+            -- WoW Forever: a rank alternate on the filter holds its family's
+            -- primary too, so the search offers no second row for that buff.
+            -- nil on every other client.
+            local ap = ns.BM2_ForeverAltPrimary
+            local held
+            if ap then
+                held = {}
+                if f.spells then
+                    for sid in pairs(f.spells) do
+                        if ap[sid] and not ns.BM2_OtherClientSpell(f, sid) then held[ap[sid]] = true end
+                    end
+                end
+                if f.custom then
+                    for sid in pairs(f.custom) do
+                        if ap[sid] then held[ap[sid]] = true end
+                    end
+                end
+            end
             local out = {}
             for i = 1, #universe do
                 local id = universe[i]
-                local onFilter = (f.spells and f.spells[id] ~= nil)
+                -- An id kept only for the other client is not on the filter here.
+                local onFilter = (f.spells and f.spells[id] ~= nil
+                        and not ns.BM2_OtherClientSpell(f, id))
                     or (f.custom and f.custom[id])
+                    or (held and held[id])
                 if not onFilter then
                     local nm = (ns.SPELL_NAME_BY_ID and ns.SPELL_NAME_BY_ID[id])
                         or (C_Spell.GetSpellName and C_Spell.GetSpellName(id))
@@ -3081,7 +3123,8 @@ function ns.BMP_ShowFilterEditor()
         if info and info.class then
             byClass[info.class] = byClass[info.class] or {}
             table.insert(byClass[info.class], id)
-        else
+        elseif not ns.BM2_OtherClientSpell(sel, id) then
+            -- Ids kept only for the other client get no row.
             table.insert(customList, id)
         end
     end
@@ -3356,13 +3399,20 @@ function ns.BMP_BuildAssignedFilters(parent, sy, ind, fontPath)
         end
         local function ByLabel(a, b) return a.label < b.label end
         local function ExtraItems()
+            -- WoW Forever: a rank alternate stands for its family's primary
+            -- (BM2_ResolveSpellsOwn), so Presets offers no second row for a
+            -- buff already assigned. nil on every other client.
+            local ap = ns.BM2_ForeverAltPrimary
             local covered = {}
             if ind.filters and ns.BM2_GetFilter then
                 for fid in pairs(ind.filters) do
                     local f = ns.BM2_GetFilter(fid)
                     if f then
                         for id, on in pairs(f.spells) do
-                            if on then covered[id] = true end
+                            if on and not ns.BM2_OtherClientSpell(f, id) then
+                                covered[id] = true
+                                if ap and ap[id] then covered[ap[id]] = true end
+                            end
                         end
                     end
                 end
@@ -3373,6 +3423,7 @@ function ns.BMP_BuildAssignedFilters(parent, sy, ind, fontPath)
             local sp = ind.spells or {}
             for i = 1, #sp do
                 seen[sp[i]] = true
+                if ap and ap[sp[i]] then seen[ap[sp[i]]] = true end
                 selected[#selected + 1] = SpellEntry(sp[i])
             end
             for i = 1, #universe do
@@ -3511,8 +3562,12 @@ function ns.BMP_BuildAssignedFilters(parent, sy, ind, fontPath)
                 end
                 local so = ind.spellOrder
                 if so then
+                    -- WoW Forever: an entry saved under a rank alternate
+                    -- stands for its family's primary. nil elsewhere.
+                    local ap = ns.BM2_ForeverAltPrimary
                     for i = 1, #so do
                         local id = so[i]
+                        if ap then id = ap[id] or id end
                         if present[id] and not seen[id] then
                             seen[id] = true
                             Add(id)

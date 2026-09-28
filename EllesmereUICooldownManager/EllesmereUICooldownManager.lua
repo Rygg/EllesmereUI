@@ -639,6 +639,44 @@ local CDM_ITEM_PRESETS = {
 }
 ns.CDM_ITEM_PRESETS = CDM_ITEM_PRESETS
 
+-- WoW Forever: the lust, Time Spiral and current-season potion presets have no
+-- vanilla counterpart, so both lists drop them here, before any reader (the
+-- Tracking Bars copy, the pickers, the item-preset maps) is built from them.
+-- A bar or entry saved with one of these keys keeps it and finds no preset.
+-- The Healthstone preset tracks the vanilla stones instead: five tiers, each a
+-- base stone and two improved-talent stones. The Minor stone stays the primary
+-- so entries saved against it keep their identity; the picker art is the
+-- client's own stone icon. Vanilla stones are single-use items on a shared
+-- item cooldown, so the combat lockout is switched off there: the family's
+-- item cooldown drives the swipe for whichever stone is owned.
+if EllesmereUI.IS_FOREVER then
+    local drop = {
+        bloodlust = true, timespiral = true, lights_potential = true,
+        potion_recklessness = true, liquid_luster = true, invis_potion = true,
+        silvermoon_health = true, lightfused_mana = true, demonic_healthstone = true,
+    }
+    for _, list in ipairs({ BUFF_BAR_PRESETS, CDM_ITEM_PRESETS }) do
+        for i = #list, 1, -1 do
+            if drop[list[i].key] then table.remove(list, i) end
+        end
+    end
+    for _, p in ipairs(CDM_ITEM_PRESETS) do
+        if p.key == "healthstone" then
+            p.icon = (C_Item and C_Item.GetItemIconByID and C_Item.GetItemIconByID(5512)) or 134400
+            -- Major, Greater, Healthstone and Lesser tiers, then the improved Minor stones.
+            p.altItemIDs = {
+                9421, 19012, 19013,
+                5510, 19010, 19011,
+                5509, 19008, 19009,
+                5511, 19006, 19007,
+                19004, 19005,
+            }
+            p.combatLockout = nil
+            break
+        end
+    end
+end
+
 
 local BuildAllCDMBars
 local RegisterCDMUnlockElements
@@ -1249,8 +1287,12 @@ function ns.SpecsWithCustomSpell(spellID)
     if not sp then return out end
     local curKey = ns.GetActiveSpecKey and ns.GetActiveSpecKey()
     for key, prof in pairs(sp) do
+        -- WoW Forever: the player's class is one spec there, so its other
+        -- stored keys are not other specs (no picker row reaches them).
         if key ~= curKey and key ~= "0" and type(prof) == "table"
-           and type(prof.barSpells) == "table" then
+           and type(prof.barSpells) == "table"
+           and not (EllesmereUI.IS_FOREVER and ns._playerClass
+                    and EllesmereUI.SpecClassOf(tonumber(key)) == ns._playerClass) then
             local found = false
             for _, bs in pairs(prof.barSpells) do
                 if type(bs) == "table" and type(bs.assignedSpells) == "table" then
@@ -1433,20 +1475,33 @@ function ns.RescanMaxStacksGlowFlag()
     end)
 end
 
--- Audio on Buff Gain/Loss gate: set ns._cdmAnyBuffSound once if any saved buff icon (any spec)
--- has a gain OR loss sound chosen, so DecorateFrame/RefreshCDMIconAppearance skip attaching the
--- apply-edge sound hook for non-users. Same scanned-once + runtime-enable contract as RescanMaxStacksGlowFlag.
+-- Audio on Buff Gain/Loss gate: set ns._cdmAnyBuffSound once if any saved buff icon or
+-- tracking bar (any spec) has a gain OR loss sound chosen, so DecorateFrame/RefreshCDMIconAppearance
+-- skip attaching the apply-edge sound hook for non-users. The icon half keeps the scanned-once +
+-- runtime-enable contract of RescanMaxStacksGlowFlag. ns._tbbAnyBuffSound is the tracking-bar
+-- half on its own, so icon-only users skip the tracking-bar lookup on every buff alert. Its scan
+-- is O(specs x bars) with no allocation, so it repeats on every rebuild until it finds a sound,
+-- which also picks up bar sounds a live profile switch brings in.
 function ns.RescanBuffSoundFlag()
-    if ns._cdmAnyBuffSound or ns._buffSoundFlagScanned then return end
     if not EllesmereUIDB then return end
-    ns._buffSoundFlagScanned = true
-    ns.ForEachSavedSettingsBlock(function(ss)
-        if (ss.buffActiveSoundKey and ss.buffActiveSoundKey ~= "none")
-            or (ss.buffLostSoundKey and ss.buffLostSoundKey ~= "none") then
-            ns._cdmAnyBuffSound = true
-            return true
+    if not ns._buffSoundFlagScanned then
+        ns._buffSoundFlagScanned = true
+        if not ns._cdmAnyBuffSound then
+            ns.ForEachSavedSettingsBlock(function(ss)
+                if (ss.buffActiveSoundKey and ss.buffActiveSoundKey ~= "none")
+                    or (ss.buffLostSoundKey and ss.buffLostSoundKey ~= "none") then
+                    ns._cdmAnyBuffSound = true
+                    return true
+                end
+            end)
         end
-    end)
+    end
+    -- Tracking Bars keep the same two keys on their bar configs, which the
+    -- settings-block walk above never visits. EnsureTBBSoundHooks flips both
+    -- gates and hooks the frames already out of the buff viewer pools.
+    if not ns._tbbAnyBuffSound and ns.TBBAnyBuffSound and ns.TBBAnyBuffSound() then
+        ns.EnsureTBBSoundHooks()
+    end
 end
 
 -- Resolve the configured buff gain/loss sound key for a spell id in the CURRENT
@@ -1795,6 +1850,41 @@ local function ComputeLiveSpecKey()
     return tostring(specID)
 end
 ns.ComputeLiveSpecKey = ComputeLiveSpecKey
+
+if EllesmereUI.IS_FOREVER then
+    -- WoW Forever reports one spec per class. The store key is the Forever
+    -- spec's own key if the ACTIVE profile's store holds it (the layout the
+    -- client has been showing), else the first retail spec of the class with
+    -- a bucket, else the class's first retail spec. Resolved once per store
+    -- table: an edit inside a profile never moves the key; a profile switch or
+    -- import (a new store table) re-resolves it before the rebuild reads
+    -- anything. SPELLS_CHANGED compares against this same memo, so it can
+    -- never mistake a data edit for a spec swap. Memo inputs: the store root
+    -- and the raw live spec ID. The active key also records the store root it
+    -- was resolved for (ns._fvSpecKeyRoot), so a key resolved against one
+    -- profile's store is never served against another's.
+    ComputeLiveSpecKey = function()
+        local specIndex = C_SpecializationInfo.GetSpecialization()
+        if not specIndex or specIndex == 0 then return nil end
+        local specID = select(1, C_SpecializationInfo.GetSpecializationInfo(specIndex))
+        if not specID or specID == 0 then return nil end
+        local sp = ns.GetActiveSpecProfiles()
+        local m = ns._fvSpecKeyMemo
+        if m and m.root == sp and m.raw == specID then return m.key end
+        local key = tostring(EllesmereUI.SpecFor(specID, EllesmereUI.SpecHasStringEntry, sp))
+        ns._fvSpecKeyMemo = { root = sp, raw = specID, key = key }
+        return key
+    end
+    ns.ComputeLiveSpecKey = ComputeLiveSpecKey
+    function ns.GetActiveSpecKey()
+        if _cachedSpecKey and ns._fvSpecKeyRoot == ns.GetActiveSpecProfiles() then return _cachedSpecKey end
+        local key = ComputeLiveSpecKey()
+        if not key then return nil end
+        _cachedSpecKey = key
+        ns._fvSpecKeyRoot = ns.GetActiveSpecProfiles()
+        return key
+    end
+end
 
 -- Per-character identifier for legacy callers; no longer used for spec storage.
 function ns.GetCharKey()
@@ -2589,7 +2679,7 @@ StartNativeGlow = function(overlay, style, cr, cg, cb, opts)
             end
         end
         -- Options previews (opts.panel): draw the pixels the live glow shows.
-        if opts and opts.panel and _G_Glows.PanelThickness then th = _G_Glows.PanelThickness(th) end
+        if opts and opts.panel then th = _G_Glows.PanelThickness(th) end
         local lineLen = math.floor((pW + pH) * (2 / N - 0.1))
         lineLen = math.min(lineLen, math.min(pW, pH))
         if lineLen < 1 then lineLen = 1 end
@@ -6671,10 +6761,27 @@ do
     local _soundThrottleLost = {}        -- [spellID] = last GetTime() (loss)
     local SOUND_MIN_GAP = 0.3
 
-    -- Per-spell tier then bar tier, for one setting key. nil = silent.
-    local function PickBuffSoundKey(ss, sid, field)
+    -- Setting key for one edge, nil = silent. A frame the CDM decorates answers
+    -- from its own settings first. A Tracked Bars frame then asks its tracking
+    -- bar before FindBuffSoundKey, whose bar tier answers for every spell no
+    -- extra buff bar claims (a Buffs bar "Apply to Bar" sound would otherwise
+    -- shadow the bar's own). A bar with a sound on its other edge only keeps
+    -- this edge silent (false), so the Buffs bar is not asked either. A buff
+    -- icon frame asks the tracking bars last.
+    local function PickBuffSoundKey(ss, sid, field, f)
         local k = ss and ss[field]
-        if not k then k = ns.FindBuffSoundKey and ns.FindBuffSoundKey(sid, field) end
+        if not k then
+            local tbbOn = ns._tbbAnyBuffSound
+            local bv = tbbOn and f and _G.BuffBarCooldownViewer
+            local barFrame = bv and f.viewerFrame == bv
+            local owned
+            if barFrame then
+                k = ns.FindTBBSoundKey(f, sid, field)
+                owned = k == false
+            end
+            if not k and not owned then k = ns.FindBuffSoundKey(sid, field) end
+            if not k and tbbOn and not barFrame then k = ns.FindTBBSoundKey(f, sid, field) end
+        end
         if not k or k == "none" then return nil end
         return k
     end
@@ -6687,6 +6794,16 @@ do
         throttle[sid] = now
         local path = FOCUSKICK_SOUND_PATHS[key]
         if path then PlaySoundFile(path, "Master") end
+    end
+
+    -- Edge entry point for Tracking Bars' self-timed presets (Bloodlust, Time
+    -- Spiral, potions). They never fire a Blizzard aura alert, so their own timer
+    -- start/stop hands the cue here: same loading-screen suppression, same 0.3s
+    -- overlap guard (id is a "tbb:<preset>" string, clear of spell ids).
+    function ns.PlayBuffSoundEdge(key, id, gainEdge)
+        if not key or key == "none" then return end
+        if ns._cdmSoundSuppressed and ns._cdmSoundSuppressed() then return end
+        PlayThrottled(key, id, gainEdge and _soundThrottle or _soundThrottleLost)
     end
 
     local function FlushBuffEdges()
@@ -6736,8 +6853,8 @@ do
         end
         -- A silent edge still has to be recorded so it can cancel its partner, but only
         -- when the OTHER edge has a cue -- so the second lookup runs only on that path.
-        local key = PickBuffSoundKey(ss, sid, gainEdge and "buffActiveSoundKey" or "buffLostSoundKey")
-        if not key and not PickBuffSoundKey(ss, sid, gainEdge and "buffLostSoundKey" or "buffActiveSoundKey") then
+        local key = PickBuffSoundKey(ss, sid, gainEdge and "buffActiveSoundKey" or "buffLostSoundKey", f)
+        if not key and not PickBuffSoundKey(ss, sid, gainEdge and "buffLostSoundKey" or "buffActiveSoundKey", f) then
             return
         end
         -- A new frame closes the previous batch: pairing must never reach across the
@@ -7826,6 +7943,29 @@ local function RebuildKeybindCache()
     end
 end
 
+-- Spell half of the keybind lookup, shared by the CDM icons and the Rotation
+-- Assist Icon: the id itself, then its override, its base, then its name.
+-- The item and trinket fallbacks stay with the CDM icons below.
+local function ResolveCDMKeybind(sid)
+    local key = _cdmKeybindCache[sid]
+    if key then return key end
+    local ovr = C_Spell.GetOverrideSpell(sid)
+    if ovr and not issecretvalue(ovr) and ovr ~= sid then
+        key = _cdmKeybindCache[ovr]
+        if key then return key end
+    end
+    local base = C_Spell.GetBaseSpell(sid)
+    if base and not issecretvalue(base) and base ~= sid then
+        key = _cdmKeybindCache[base]
+        if key then return key end
+    end
+    if sid > 0 then
+        local name = C_Spell.GetSpellName(sid)
+        if name and not issecretvalue(name) then return _cdmKeybindCache[name] end
+    end
+end
+ns.ResolveCDMKeybind = ResolveCDMKeybind
+
 -- Apply the current cache to all visible CDM icon keybind texts
 local function ApplyCachedKeybinds()
     for barKey, icons in pairs(cdmBarIcons) do
@@ -7837,17 +7977,7 @@ local function ApplyCachedKeybinds()
                 local ifc = _ecmeFC[icon]
                 local sid = ifc and ifc.spellID
                 if bd and bd.showKeybind and sid then
-                    local key = _cdmKeybindCache[sid]
-                    if not key then
-                        local ovr = C_Spell.GetOverrideSpell and C_Spell.GetOverrideSpell(sid)
-                        if ovr and ovr ~= sid then key = _cdmKeybindCache[ovr] end
-                    end
-                    if not key then
-                        local base = C_Spell.GetBaseSpell and C_Spell.GetBaseSpell(sid)
-                        if base and base ~= sid then key = _cdmKeybindCache[base] end
-                    end
-                    local name = sid > 0 and C_Spell.GetSpellName and C_Spell.GetSpellName(sid)
-                    if not key and name then key = _cdmKeybindCache[name] end
+                    local key = ResolveCDMKeybind(sid)
                     -- Item presets: the resolved display variant first (pot presets may be showing another rank/Fleeting/the swapped-in partner pot), then the static alt ids.
                     if not key and icon._isItemPresetFrame and icon._displayItemID then
                         key = _cdmKeybindCache[-icon._displayItemID]
@@ -7873,7 +8003,9 @@ local function ApplyCachedKeybinds()
                 else
                     kbText:Hide()
                 end
-                ns.RefreshCDMKeybindBadge(kbText, bd)
+                -- Visibility pass only: settings edges restyle the badge
+                -- through StyleCDMKeybind.
+                ns.ShowCDMKeybindBadge(kbText, bd)
             end
         end
     end
@@ -8778,6 +8910,8 @@ function ns.ReconcileAssignedSpellDrops(barKey)
         end
     end
 
+    -- WoW Forever's full catalogue set, built on first need (see below).
+    local foreverListed
     local writeIdx = 1
     for readIdx = 1, #sd.assignedSpells do
         local id = sd.assignedSpells[readIdx]
@@ -8821,11 +8955,22 @@ function ns.ReconcileAssignedSpellDrops(barKey)
                 -- Owned but no longer tracked: the user cleared it from
                 -- Blizzard's CDM tracking -> drop.
                 keep = false
-            elseif catalogSet then
+            elseif catalogSet and not EllesmereUI.IS_FOREVER then
                 -- Untalented: it only reached the preview by being
                 -- materialized from the settings catalog, so it must also
                 -- LEAVE when removed from tracking -> drop.
                 keep = false
+            elseif catalogSet then
+                -- WoW Forever: the same, but only for an id its catalogue
+                -- lists (Not Displayed included). An id it does not list is
+                -- a spell this client cannot see (a retail layout's), so it
+                -- holds its place instead.
+                if foreverListed == nil then
+                    foreverListed = ns.CDMForeverListedSet() or false
+                end
+                keep = not (foreverListed and (foreverListed[id]
+                    or foreverListed[NormalizeToBase(id)]
+                    or foreverListed[ResolveToLive(id)]))
             else
                 -- Untalented with no catalog signal (provider down): hold
                 -- rank as the safe fallback so a transient gap never wipes
@@ -9138,6 +9283,44 @@ function ns.CDMEntryHiddenOrRemoved(cdID, mergedInfo, rawInfo, liveSetLookup)
     return nil
 end
 
+-- WoW Forever: every spell id Forever's Cooldown Manager catalogue lists, in
+-- any category, shown or Not Displayed, with base and live forms. A stored id
+-- outside it is a spell this client cannot see (a retail-only spell a retail
+-- layout carried in): the drop passes keep it and the options preview gives
+-- it no slot. nil off Forever or while the catalogue is not readable (callers
+-- then keep everything). Read-only, drop-pass and options time only.
+function ns.CDMForeverListedSet()
+    if not EllesmereUI.IS_FOREVER then return nil end
+    local settings = _G.CooldownViewerSettings
+    if not settings or type(settings.GetDataProvider) ~= "function" then return nil end
+    local okP, provider = pcall(settings.GetDataProvider, settings)
+    if not okP or type(provider) ~= "table" then return nil end
+    local ordered = ns.CDMGetProviderDisplayData(provider)
+    local gci = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo
+    if not (ordered and gci) then return nil end
+    local NormalizeToBase, ResolveToLive = ns.NormalizeToBase, ns.ResolveToLive
+    local set = {}
+    local function Add(v)
+        if _IsUsableSID(v) then
+            set[v] = true
+            set[NormalizeToBase(v)] = true
+            set[ResolveToLive(v)] = true
+        end
+    end
+    for _, cdID in ipairs(ordered) do
+        local info = _IsUsableSID(cdID) and gci(cdID)
+        if info then
+            Add(info.spellID)
+            Add(info.overrideSpellID)
+            if type(info.linkedSpellIDs) == "table" then
+                for _, lid in ipairs(info.linkedSpellIDs) do Add(lid) end
+            end
+        end
+    end
+    if not next(set) then return nil end
+    return set
+end
+
 -------------------------------------------------------------------------------
 --  Buff-family assigned-spell reconcile
 --
@@ -9272,6 +9455,8 @@ function ns.ReconcileBuffFamilyDrops(barKey)
     local hosted  = sd.hostedBuffSpellIDs
 
     local dropped = false
+    -- WoW Forever's full catalogue set, built on first need (see below).
+    local foreverListed
     local writeIdx = 1
     for readIdx = 1, #sd.assignedSpells do
         local id = sd.assignedSpells[readIdx]
@@ -9335,7 +9520,22 @@ function ns.ReconcileBuffFamilyDrops(barKey)
             for member in pairs(family) do
                 if present[member] then anyPresent = true; break end
             end
-            if vouched and not anyPresent then
+            -- WoW Forever: a family its catalogue does not list at all (Not
+            -- Displayed included) is a buff this client cannot see (a retail
+            -- layout's): it holds its place instead.
+            local unseen = false
+            if vouched and not anyPresent and EllesmereUI.IS_FOREVER then
+                if foreverListed == nil then
+                    foreverListed = ns.CDMForeverListedSet() or false
+                end
+                unseen = true
+                if foreverListed then
+                    for member in pairs(family) do
+                        if foreverListed[member] then unseen = false; break end
+                    end
+                end
+            end
+            if vouched and not anyPresent and not unseen then
                 keep = false
                 dropped = true
             end
@@ -10324,13 +10524,6 @@ local function _rotShow(icon)
         if thickness < 1 then thickness = 1 elseif thickness > 8 then thickness = 8 end
         local cr, cg, cb = _rotResolveColor(cfg)
         local glowStyle = ROT_STYLE_TO_GLOW[style]
-        if glowStyle and rfc.isReplacementBuff then
-            -- Blizzard aura hosts: driver-ticked styles freeze under secret
-            -- visibility, so the glow engine's own remap picks the FlipBook
-            -- twin (pixel -> classic, the rest -> modern).
-            local safe = EllesmereUI.Glows and EllesmereUI.Glows.RestrictionSafeStyle
-            if safe then glowStyle = safe(glowStyle) end
-        end
         -- Pixel Glow lines/speed/background (unset = the engine defaults).
         local lines, speed = cfg.rotationAssistLines or 8, cfg.rotationAssistSpeed or 4
         local bgc = cfg.rotationAssistBackground and cfg.rotationAssistBackgroundColor

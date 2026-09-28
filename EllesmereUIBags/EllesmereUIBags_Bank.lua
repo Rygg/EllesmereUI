@@ -376,7 +376,7 @@ if EUI.IS_FOREVER then
     local winBg = bagsWin:CreateTexture(nil, "BACKGROUND")
     winBg:SetAllPoints()
     winBg:SetColorTexture(0.02, 0.02, 0.02, 0.95)
-    if EUI.PanelPP then EUI.PanelPP.CreateBorder(bagsWin, 0.1, 0.1, 0.1, 1, 1, "OVERLAY", 7) end
+    EUI.PanelPP.CreateBorder(bagsWin, 0.1, 0.1, 0.1, 1, 1, "OVERLAY", 7)
 
     local bagsBtn = CreateFrame("Button", nil, header)
     bagsBtn:SetSize(24, 24)
@@ -468,7 +468,9 @@ if EUI.IS_FOREVER then
             else
                 btn.Count:Hide()
             end
-            local c = info and info.quality > 0 and ITEM_QUALITY_COLORS[info.quality]
+            -- quality is nilable (item data not cached yet).
+            local q = info and info.quality
+            local c = q and q > 0 and ITEM_QUALITY_COLORS[q]
             if c then
                 btn._bdrR, btn._bdrG, btn._bdrB = c.r, c.g, c.b
             else
@@ -2184,6 +2186,8 @@ function EUI_Bank:RefreshBank()
     EUI_Bank._layoutGridW = gridW
 
     -- Shared slot render: updates a single button with item or empty state
+    -- One reused data table for third-party overlay painters (EUI_Bags.RunItemOverlays).
+    local overlayData = {}
     local function RenderSlotContent(btn, bagID, slot, cachedInfo)
         if btn.ProfessionQualityOverlay then btn.ProfessionQualityOverlay:SetAlpha(0) end
         if btn.IconOverlay then btn.IconOverlay:SetAlpha(0); btn.IconOverlay:Hide() end
@@ -2298,6 +2302,11 @@ function EUI_Bank:RefreshBank()
                     btn.Cooldown:SetDrawEdge(true); btn.Cooldown:SetCooldown(cdS, cdD)
                 else btn.Cooldown:Clear() end
             end
+        end
+        if next(EUI_Bags.itemOverlayIcons) ~= nil then
+            overlayData.bag, overlayData.slot, overlayData.info = bagID, slot, info
+            overlayData.itemLink = info and C_Container.GetContainerItemLink(bagID, slot) or nil
+            EUI_Bags.RunItemOverlays(btn, overlayData)
         end
     end
 

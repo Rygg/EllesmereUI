@@ -280,11 +280,11 @@ initFrame:SetScript("OnEvent", function(self)
                 w:SetAllPoints(btn); w:SetFrameLevel(btn:GetFrameLevel() + 4)
                 btn._glowWrapper = w
             end
-            if glowSpec and EllesmereUI.Glows then
+            if glowSpec then
                 EllesmereUI.Glows.StartSpecGlow(btn._glowWrapper, glowSpec, sz, sz, "icon", EllesmereUI.Glows.PANEL_EXTRA)
                 btn._glowWrapper:Show()
             else
-                if EllesmereUI.Glows then EllesmereUI.Glows.StopAllGlows(btn._glowWrapper) end
+                EllesmereUI.Glows.StopAllGlows(btn._glowWrapper)
                 btn._glowWrapper:Hide()
             end
 
@@ -925,7 +925,7 @@ initFrame:SetScript("OnEvent", function(self)
     local abrGlowDesc
     do
         local GO = EllesmereUI.GlowOptions
-        abrGlowDesc = GO and _G._EABR_GLOW_VIEW and {
+        abrGlowDesc = _G._EABR_GLOW_VIEW and {
             view = _G._EABR_GLOW_VIEW, host = "icon", excludes = { [4] = true },
             caps = { mode = true, params = true, bg = true },
             defaultColor = { r = 1.0, g = 0.788, b = 0.137 },
@@ -1206,7 +1206,7 @@ initFrame:SetScript("OnEvent", function(self)
         local abrDesc = abrGlowDesc
         local rowGlow
         rowGlow, h = W:DualRow(parent, y,
-            abrDesc and GO.DropdownSpec(abrDesc, "Glow Type") or { type="label", text="" },
+            abrDesc and GO.DropdownSpec(abrDesc, "Glow Type") or EllesmereUI.BlankRowCfg(),
             { type="toggle", text="Attach Important Buffs to Cursor",
               tooltip="This option only affects Raid Buffs and Paladin Beacons",
               getValue=function() local d = DDB(); return d and d.cursorAttach end,

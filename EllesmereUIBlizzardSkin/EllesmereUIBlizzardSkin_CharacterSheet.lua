@@ -429,7 +429,7 @@ do
             showAdjustedStats            = false,
             showManaStat                 = false,
             showCharSheetDurability      = false,
-            charSheetSeasonPanel         = false,
+            charSheetSeasonPanel         = true,
             charSheetHideSlotFlyoutArrows = false,
             charSheetDurabilityLocation  = "model",
             charSheetDurabilityShowLabel = true,

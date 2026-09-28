@@ -47,7 +47,7 @@ end
 --  taint-safe, so re-calls from the dev's own refresh hooks are near-free.
 -------------------------------------------------------------------------------
 local base = {}
-base.apiVersion = 1
+base.apiVersion = 2   -- 2: SetTabSelection
 
 local PASS = {
     -- Containers / chrome

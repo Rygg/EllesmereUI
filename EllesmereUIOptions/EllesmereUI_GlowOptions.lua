@@ -4,15 +4,20 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  is a SITE descriptor: host ("icon"/"bar"/"engine"), view or toShared/
 --  fromShared/order for its saved style numbering, excludes, noneValue,
 --  extras (Blizzard Default, Solid; one with a style renders, e.g. Blizzard
+--  Border; one marked colored is drawn in the site's color, e.g. Solid
 --  Border), caps {mode, params, bg}, defaultColor, get/set on its own keys
 --  ("style", "mode", "color", "lines", "thickness", "speed", "bg", "bgColor"),
---  plus optional isOff, onChange, confirm, disabled, colorDisabled, cogRows.
+--  plus optional isOff, onChange, confirm, disabled, colorDisabled, cogRows,
+--  and styleDisabled + styleDisabledTooltip (a whole sentence, shown as is):
+--  a lock on the style alone -- the color swatches and the Pixel Glow cog stay
+--  live, and the template leaves the site alone while it holds.
 
 
 local GO = {}
 EllesmereUI.GlowOptions = GO
 
-local function Glows() return EllesmereUI.Glows end
+-- The glow engine loads in the parent addon, before any options file.
+local G = EllesmereUI.Glows
 
 -------------------------------------------------------------------------------
 --  Style value mapping
@@ -27,7 +32,7 @@ function GO.ToShared(desc, v)
     if v == nil or v == NoneValue(desc) then return nil end
     if desc.toShared then return desc.toShared(v) end
     if desc.view then return desc.view.toShared[v] end
-    if type(v) == "number" and v >= 1 and v <= #Glows().STYLES then return v end
+    if type(v) == "number" and v >= 1 and v <= #G.STYLES then return v end
     return nil
 end
 
@@ -41,7 +46,6 @@ end
 -- Shared index -> the nearest style this site both renders and offers (its view
 -- or order can lack styles the host could draw), plus whether it changed.
 function GO.Resolve(desc, idx)
-    local G = Glows()
     local ex = desc._resolveEx
     if not ex then
         ex = {}
@@ -54,7 +58,7 @@ function GO.Resolve(desc, idx)
 end
 
 local function StyleOffered(desc, idx)
-    local caps = Glows().HOSTS[desc.host or "icon"]
+    local caps = G.HOSTS[desc.host or "icon"]
     return caps and caps[idx] and not (desc.excludes and desc.excludes[idx])
 end
 
@@ -71,7 +75,7 @@ local function OrderedStyleValues(desc)
             if StyleOffered(desc, desc.view.toShared[i]) then out[#out + 1] = i end
         end
     else
-        for i = 1, #Glows().STYLES do
+        for i = 1, #G.STYLES do
             if StyleOffered(desc, i) then out[#out + 1] = i end
         end
     end
@@ -92,7 +96,7 @@ function GO.StyleValues(desc)
             order[#order + 1] = x.value
         end
     end
-    local styles = Glows().STYLES
+    local styles = G.STYLES
     for _, v in ipairs(OrderedStyleValues(desc)) do
         values[v] = styles[GO.ToShared(desc, v)].name
         order[#order + 1] = v
@@ -121,6 +125,13 @@ function GO.IsOff(desc)
     if desc.isOff and desc.isOff() then return true end
     local v = desc.get("style")
     return v == nil or v == NoneValue(desc)
+end
+
+-- The site's own lock (desc.disabled: every control), or a style-only lock
+-- (desc.styleDisabled: the style dropdown alone). Either keeps the template out.
+function GO.StyleLocked(desc)
+    if desc.disabled and desc.disabled() then return true end
+    return (desc.styleDisabled and desc.styleDisabled()) and true or false
 end
 
 -- A real glow (not off, not an extra such as Blizzard Default or Solid).
@@ -161,7 +172,6 @@ end
 function GO.Spec(desc)
     local s = desc._spec
     if not s then s = {}; desc._spec = s end
-    local G = Glows()
     local x = CurrentExtra(desc)
     s.style = GO.ToShared(desc, desc.get("style")) or (x and x.style) or 1
     s.excludes = desc.excludes
@@ -179,7 +189,7 @@ function GO.Spec(desc)
         s.bg = true
         s.bgR, s.bgG, s.bgB = desc.get("bgColor")
     else
-        s.bg = nil
+        s.bg, s.bgR, s.bgG, s.bgB = nil, nil, nil, nil
     end
     return s
 end
@@ -196,6 +206,9 @@ end
 --  Controls
 -------------------------------------------------------------------------------
 
+-- Lock reason for color controls while no glow is picked (a whole sentence).
+local NO_STYLE_TIP = "This option requires a Glow Style other than None"
+
 -- The style control's getter: None while off, else the displayed value.
 local function StyleGetter(desc, values)
     return function()
@@ -204,16 +217,38 @@ local function StyleGetter(desc, values)
     end
 end
 
+-- The style control's lock: the site's own disabled/disabledTooltip/rawTooltip,
+-- widened by styleDisabled when the site has one (its sentence shows as is
+-- while only the style is locked).
+local function StyleLock(desc)
+    if not desc.styleDisabled then return desc.disabled, desc.disabledTooltip, desc.rawTooltip end
+    local function siteOff() return desc.disabled and desc.disabled() end
+    return function() return GO.StyleLocked(desc) end,
+        function()
+            if not siteOff() then return desc.styleDisabledTooltip end
+            local tt = desc.disabledTooltip
+            if type(tt) == "function" then tt = tt() end
+            return tt
+        end,
+        function()
+            if not siteOff() then return true end
+            local raw = desc.rawTooltip
+            if type(raw) == "function" then raw = raw() end
+            return raw
+        end
+end
+
 -- DualRow half spec for the style dropdown.
 function GO.DropdownSpec(desc, text, tooltip)
     local values, order = GO.StyleValues(desc)
+    local lockFn, lockTip, lockRaw = StyleLock(desc)
     return {
         type = "dropdown", text = text or "Glow",
         values = values, order = order,
         tooltip = tooltip,
-        disabled = desc.disabled,
-        disabledTooltip = desc.disabledTooltip,
-        rawTooltip = desc.rawTooltip,
+        disabled = lockFn,
+        disabledTooltip = lockTip,
+        rawTooltip = lockRaw,
         getValue = StyleGetter(desc, values),
         setValue = function(v)
             local function commit()
@@ -247,7 +282,6 @@ local function CogRows(desc)
     local rows = {}
     local caps = desc.caps or {}
     local notPixel = NotPixel(desc)
-    local G = Glows()
     if caps.params then
         rows[#rows + 1] = { type = "slider", label = "Lines", min = 2, max = 16, step = 1,
             get = function() return desc.get("lines") or 8 end,
@@ -295,7 +329,7 @@ local function ColorRow(desc, off)
         swatches = {
             { tooltip = "Default", refreshAlpha = modeAlpha("default"), onClick = pick("default"),
               getValue = function()
-                  local c = Glows().DEFAULT_COLOR
+                  local c = G.DEFAULT_COLOR
                   return c.r, c.g, c.b, 1
               end },
             { tooltip = "Custom Color", refreshAlpha = modeAlpha("custom"),
@@ -326,8 +360,10 @@ function GO.PopupRows(desc, styleLabel)
     local values, order = GO.StyleValues(desc)
     local rows = {}
     local off = function() return not GO.Renders(desc) end
+    local lockFn, lockTip, lockRaw = StyleLock(desc)
     rows[#rows + 1] = { type = "dropdown", label = styleLabel or "Glow Style",
         values = values, order = order, ddWidth = 170,
+        disabled = lockFn, disabledTooltip = lockTip, rawTooltip = lockRaw,
         get = StyleGetter(desc, values),
         set = function(v)
             local function commit() desc.set("style", v); GO.Changed(desc); EllesmereUI:RefreshPage() end
@@ -342,17 +378,35 @@ end
 -- Color swatches and the Pixel Glow cog, chained left of the region's control.
 -- rgn = the DualRow half-region holding the style dropdown; colorRgn = an
 -- optional free half-region (a "Glow Color" label) that takes the swatches.
+-- A style-only lock (desc.styleDisabled) leaves both live.
 function GO.AttachInline(rgn, desc, colorRgn)
     if EllesmereUI._prebuilding or not rgn then return end
     local PP = EllesmereUI.PanelPP
     local caps = desc.caps or {}
+    local function siteOff() return desc.disabled and desc.disabled() end
     local function off()
-        if desc.disabled and desc.disabled() then return true end
+        if siteOff() then return true end
         return not GO.Renders(desc)
     end
     -- colorDisabled: the site's color comes from elsewhere (NP Color by Type).
+    -- A colored extra (Solid Border) draws nothing to style but takes the color.
     local function colorOff()
-        return off() or (desc.colorDisabled and desc.colorDisabled()) or false
+        if siteOff() then return true end
+        if not GO.Renders(desc) then
+            local x = CurrentExtra(desc)
+            if not (x and x.colored) then return true end
+        end
+        return (desc.colorDisabled and desc.colorDisabled()) or false
+    end
+    -- Why the swatches are locked, as the sentence shown: the site's own
+    -- requirement (resolved like its dropdown's), no glow to color, or a
+    -- color that comes from elsewhere.
+    local function colorLockTip()
+        if siteOff() then return EllesmereUI.ResolveDisabledTip(desc) end
+        if not GO.Renders(desc) then return EllesmereUI.DisabledTooltip(NO_STYLE_TIP) end
+        if desc.colorDisabledTooltip then
+            return EllesmereUI.DisabledTooltip(desc.colorDisabledTooltip, "disabled")
+        end
     end
     local level = rgn:GetFrameLevel() + 3
     -- Disabled swatches still explain themselves: a mouse blocker over them
@@ -364,9 +418,8 @@ function GO.AttachInline(rgn, desc, colorRgn)
         block:SetFrameLevel(level + 10)
         block:EnableMouse(true)
         block:SetScript("OnEnter", function(self)
-            local tip = (not off() and desc.colorDisabledTooltip)
-                or "This option requires a Glow Style other than None"
-            EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.DisabledTooltip(tip, "disabled"))
+            local tip = colorLockTip()
+            if tip then EllesmereUI.ShowWidgetTooltip(self, tip) end
         end)
         block:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
         block:SetShown(colorOff())
@@ -410,23 +463,6 @@ function GO.AttachInline(rgn, desc, colorRgn)
             customSw:EnableMouse(not o); defaultSw:EnableMouse(not o); classSw:EnableMouse(not o)
             block:SetShown(o)
         end)
-    else
-        local sw, upd = EllesmereUI.BuildColorSwatch(rgn, level,
-            function()
-                local r, g, b = desc.get("color")
-                local dc = desc.defaultColor
-                return r or (dc and dc.r) or 1, g or (dc and dc.g) or 1, b or (dc and dc.b) or 1, 1
-            end,
-            function(r, g, b) desc.set("color", r, g, b); GO.Changed(desc) end,
-            false, 20)
-        PP.Point(sw, "RIGHT", rgn._lastInline or rgn._control, "LEFT", -12, 0)
-        rgn._lastInline = sw
-        local block = Blocker(sw, sw)
-        EllesmereUI.RegisterWidgetRefresh(function()
-            local o = colorOff()
-            sw:SetAlpha(o and 0.15 or 1); sw:EnableMouse(not o); upd()
-            block:SetShown(o)
-        end)
     end
 
     local rows = CogRows(desc)
@@ -441,7 +477,14 @@ function GO.AttachInline(rgn, desc, colorRgn)
                 if off() then return true end
                 return not hasExtra and not GO.IsPixel(desc)
             end,
-            disabledTooltip = colorInCog and "a Glow Style" or "Pixel Glow",
+            -- Whichever lock holds, as the sentence shown: the site's own
+            -- requirement, else a glow to set (rows beyond Pixel's), else Pixel Glow.
+            disabledTooltip = function()
+                if siteOff() then return EllesmereUI.ResolveDisabledTip(desc) end
+                if hasExtra then return EllesmereUI.DisabledTooltip(NO_STYLE_TIP) end
+                return EllesmereUI.DisabledTooltip("Pixel Glow")
+            end,
+            rawTooltip = true,
         })
     end
 end
@@ -477,18 +520,8 @@ function GO.BuildPreview(parent, desc, opts)
         tex:SetTexture((iconFn and iconFn()) or opts.icon or PREVIEW_ICON)
         tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     end
-    local onePx = PP.Scale(1)
-    for _, info in ipairs({
-        { "TOPLEFT", "TOPRIGHT", true }, { "BOTTOMLEFT", "BOTTOMRIGHT", true },
-        { "TOPLEFT", "BOTTOMLEFT", false }, { "TOPRIGHT", "BOTTOMRIGHT", false },
-    }) do
-        local t = f:CreateTexture(nil, "OVERLAY", nil, 6)
-        t:SetColorTexture(0, 0, 0, 1)
-        if t.SetSnapToPixelGrid then t:SetSnapToPixelGrid(false); t:SetTexelSnappingBias(0) end
-        PP.Point(t, info[1], f, info[1], 0, 0)
-        PP.Point(t, info[2], f, info[2], 0, 0)
-        if info[3] then t:SetHeight(onePx) else t:SetWidth(onePx) end
-    end
+    -- 1px black edge (below the glow overlay, which sits one level higher).
+    PP.CreateBorder(f, 0, 0, 0, 1, 1, "OVERLAY", 6)
 
     local ov = CreateFrame("Frame", nil, f)
     ov:SetAllPoints(f)
@@ -497,8 +530,9 @@ function GO.BuildPreview(parent, desc, opts)
     ov._euiGlowPreview = true  -- exempt from CDM's Show Glows Only in Combat gate
 
     local function Refresh()
-        local G = Glows()
-        if not G then return end
+        -- Hidden: stays stopped until OnShow (a page refresh with the panel
+        -- closed must not put it back into the glow driver).
+        if not f:IsVisible() then return end
         if iconFn and not isBar then tex:SetTexture(iconFn() or PREVIEW_ICON) end
         if not GO.Renders(desc) then
             G.StopGlow(ov)
@@ -508,6 +542,11 @@ function GO.BuildPreview(parent, desc, opts)
         f:SetAlpha(1)
         G.StartSpecGlow(ov, GO.Spec(desc), w, h, desc.host, G.PANEL_EXTRA)
     end
+    -- A hidden preview (options closed, page left or rebuilt) stops its glow,
+    -- so it leaves the glow driver and a closed panel costs nothing; shown
+    -- again (a cached page coming back), it restarts from the current values.
+    f:SetScript("OnHide", function() G.StopGlow(ov) end)
+    f:SetScript("OnShow", Refresh)
     -- Latest build only: descriptors outlive page rebuilds, a list would grow.
     desc._preview, desc._previewFrame = Refresh, f
     EllesmereUI.RegisterWidgetRefresh(Refresh)
@@ -559,7 +598,7 @@ end
 --  getT returns the live settings table; style is a shared index, 0 = off.
 -------------------------------------------------------------------------------
 function GO.PrefixSite(getT, p, host, onChange, defColor)
-    local k = Glows().PrefixKeys(p)
+    local k = G.PrefixKeys(p)
     local desc = {
         host = host,
         caps = { mode = true, params = true, bg = true },
@@ -570,7 +609,7 @@ function GO.PrefixSite(getT, p, host, onChange, defColor)
         local t = getT()
         if not t then return nil end
         if f == "style" then return t[k.type] or 0
-        elseif f == "mode" then return Glows().DeriveColorMode(t[k.mode], t[k.class])
+        elseif f == "mode" then return G.DeriveColorMode(t[k.mode], t[k.class])
         elseif f == "color" then return t[k.r], t[k.g], t[k.b]
         elseif f == "lines" then return t[k.lines]
         elseif f == "thickness" then return t[k.th]
@@ -618,30 +657,35 @@ function GO.RegisterSite(entry)
     GO.sites[#GO.sites + 1] = entry
 end
 
+-- The saved style value a template writes into a site, whether the site had
+-- to take the nearest style it offers, and that style's shared index. nil for
+-- a site that takes no template: a paramsOnly site (the Pixel Glow parameters
+-- per-icon glows read, which the template never changes) or a style the site
+-- cannot map.
+function GO.TemplateValue(desc, t)
+    if desc.paramsOnly then return nil, false end
+    local idx, converted = GO.Resolve(desc, t.style or 1)
+    return GO.FromShared(desc, idx), converted, idx
+end
+
 -- Write a template (shared-index style + color + parameters) into a site.
 -- Only an active custom glow is touched, unless anyState: then an off glow is
 -- turned on and an extra (Blizzard Default, Solid, Blizzard Border) replaced.
--- Returns applied, converted.
+-- A locked site (GO.StyleLocked) and a paramsOnly site are never written.
+-- Writes directly: a caller acting for the user routes the style through the
+-- site's own confirm first (see desc.confirm). Returns applied, converted.
 function GO.ApplyTemplate(desc, t, anyState)
     if not anyState and not GO.IsCustomGlow(desc) then return false, false end
-    if desc.disabled and desc.disabled() then return false, false end
+    if GO.StyleLocked(desc) then return false, false end
+    local v, converted, idx = GO.TemplateValue(desc, t)
+    if v == nil then return false, false end
     local caps = desc.caps or {}
-    local converted = false
+    desc.set("style", v)
+    local tm = t.mode or "custom"
+    if caps.mode then desc.set("mode", tm) end
+    if tm == "custom" and t.r then desc.set("color", t.r, t.g, t.b) end
     -- Pixel parameters only go where the result is a Pixel Glow: for any other
     -- template style they are hidden in the template and would reset the site's.
-    local idx = 1
-    if desc.paramsOnly then
-        -- paramsOnly sites have no style or color of their own.
-        if (t.style or 1) ~= 1 then return false, false end
-    else
-        idx, converted = GO.Resolve(desc, t.style or 1)
-        local v = GO.FromShared(desc, idx)
-        if v == nil then return false, false end
-        desc.set("style", v)
-        local tm = t.mode or "custom"
-        if caps.mode then desc.set("mode", tm) end
-        if tm == "custom" and t.r then desc.set("color", t.r, t.g, t.b) end
-    end
     if caps.params and idx == 1 then
         desc.set("lines", t.lines or 8)
         desc.set("thickness", t.thickness or 2)
@@ -655,20 +699,15 @@ function GO.ApplyTemplate(desc, t, anyState)
 end
 
 -- Does the site already show what ApplyTemplate would write? An off glow or
--- an extra never does; a paramsOnly site has nothing to take from a non-Pixel one.
+-- an extra never does, nor a paramsOnly site (never a template target).
 function GO.MatchesTemplate(desc, t)
-    if not GO.IsCustomGlow(desc) then return false end
+    if desc.paramsOnly or not GO.IsCustomGlow(desc) then return false end
     local caps = desc.caps or {}
-    local idx = 1
-    if desc.paramsOnly then
-        if (t.style or 1) ~= 1 then return true end
-    else
-        idx = GO.Resolve(desc, t.style or 1)
-        if GO.ToShared(desc, desc.get("style")) ~= idx then return false end
-    end
+    local idx = GO.Resolve(desc, t.style or 1)
+    if GO.ToShared(desc, desc.get("style")) ~= idx then return false end
     local mode = caps.mode and desc.get("mode") or "custom"
-    if not desc.paramsOnly and mode ~= (t.mode or "custom") then return false end
-    if not desc.paramsOnly and mode == "custom" and t.r then
+    if mode ~= (t.mode or "custom") then return false end
+    if mode == "custom" and t.r then
         local r, g, b = desc.get("color")
         if r ~= t.r or g ~= t.g or b ~= t.b then return false end
     end

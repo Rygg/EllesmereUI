@@ -698,6 +698,45 @@ end
 --  Handles atlas-based and raw-texture FlipBook animations (GCD, Modern WoW
 --  Glow, Classic WoW Glow, and any future FlipBook styles).
 -------------------------------------------------------------------------------
+-- Region creation only: the texture with its looping FlipBook group, plus on
+-- request the atlas ants overlay (ants) and ABG's soft halo (halo), all
+-- hidden. Shared with PrewarmEngineHost, which creates without configuring.
+-- Each part's field appears only once its regions exist.
+local function _EnsureFlip(wrapper, ants, halo)
+    local d = wrapper._euiFlipData
+    if not d then
+        local tex = wrapper:CreateTexture(nil, "OVERLAY", nil, 7)
+        tex:SetPoint("CENTER")
+        tex:Hide()
+        local ag = tex:CreateAnimationGroup()
+        ag:SetLooping("REPEAT")
+        local anim = ag:CreateAnimation("FlipBook")
+        d = { tex = tex, ag = ag, anim = anim }
+        wrapper._euiFlipData = d
+    end
+    if ants and not d.ants then
+        local aTex = wrapper:CreateTexture(nil, "OVERLAY", nil, 7)
+        aTex:SetPoint("CENTER")
+        aTex:SetBlendMode("ADD")
+        aTex:Hide()
+        local aAg = aTex:CreateAnimationGroup()
+        aAg:SetLooping("REPEAT")
+        d.antsAnim = aAg:CreateAnimation("FlipBook")
+        d.antsAg = aAg
+        d.ants = aTex
+    end
+    if halo and not d.halo then
+        local haloTex = wrapper:CreateTexture(nil, "OVERLAY", nil, 6)
+        haloTex:SetTexture(ICON_ALERT_TEX)
+        haloTex:SetTexCoord(BG_GLOW_L, BG_GLOW_R, BG_GLOW_T, BG_GLOW_B)
+        haloTex:SetBlendMode("ADD")
+        haloTex:SetPoint("CENTER")
+        haloTex:Hide()
+        d.halo = haloTex
+    end
+    return d
+end
+
 local function StartFlipBookGlow(wrapper, szOrW, entry, cr, cg, cb, szH, opts)
     -- FlipBook frames have transparent padding baked in. Each atlas
     -- has a different amount, so the style entry carries a texPadding
@@ -707,15 +746,7 @@ local function StartFlipBookGlow(wrapper, szOrW, entry, cr, cg, cb, szH, opts)
     local texW = w * (entry.texPadding or 1)
     local texH = h * (entry.texPadding or 1)
 
-    if not wrapper._euiFlipData then
-        local tex = wrapper:CreateTexture(nil, "OVERLAY", nil, 7)
-        tex:SetPoint("CENTER")
-        local ag = tex:CreateAnimationGroup()
-        ag:SetLooping("REPEAT")
-        local anim = ag:CreateAnimation("FlipBook")
-        wrapper._euiFlipData = { tex = tex, ag = ag, anim = anim }
-    end
-    local d = wrapper._euiFlipData
+    local d = _EnsureFlip(wrapper, entry.atlas ~= nil, opts and opts.abgHalo)
     d.tex:SetSize(texW, texH)
     if entry.atlas then
         d.tex:SetAtlas(entry.atlas)
@@ -742,15 +773,6 @@ local function StartFlipBookGlow(wrapper, szOrW, entry, cr, cg, cb, szH, opts)
 
     -- Ants overlay: a non-desaturated duplicate at low alpha for atlas styles
     if entry.atlas then
-        if not d.ants then
-            local aTex = wrapper:CreateTexture(nil, "OVERLAY", nil, 7)
-            aTex:SetPoint("CENTER")
-            aTex:SetBlendMode("ADD")
-            local aAg = aTex:CreateAnimationGroup()
-            aAg:SetLooping("REPEAT")
-            local aAnim = aAg:CreateAnimation("FlipBook")
-            d.ants = aTex; d.antsAg = aAg; d.antsAnim = aAnim
-        end
         d.ants:SetSize(texW, texH)
         d.ants:SetAtlas(entry.atlas)
         d.ants:SetDesaturated(false)
@@ -777,14 +799,6 @@ local function StartFlipBookGlow(wrapper, szOrW, entry, cr, cg, cb, szH, opts)
     -- their own bare-ants look, while the ABG stand-in matches the real
     -- thing instead of rendering visibly thinner.
     if opts and opts.abgHalo then
-        if not d.halo then
-            local haloTex = wrapper:CreateTexture(nil, "OVERLAY", nil, 6)
-            haloTex:SetTexture(ICON_ALERT_TEX)
-            haloTex:SetTexCoord(BG_GLOW_L, BG_GLOW_R, BG_GLOW_T, BG_GLOW_B)
-            haloTex:SetBlendMode("ADD")
-            haloTex:SetPoint("CENTER")
-            d.halo = haloTex
-        end
         d.halo:SetSize(texW * 1.3, texH * 1.3)
         d.halo:SetDesaturated(true)
         -- The halo carries the glow color (the ants stay white); no color
@@ -948,6 +962,43 @@ end
 -------------------------------------------------------------------------------
 local ANIM_MASK_TEX = [[Interface\Buttons\WHITE8X8]]
 
+-- One hidden background strip of the animated ants, spanning p1 to p2.
+local function _MkAntsBg(wrapper, p1, p2)
+    local t = wrapper:CreateTexture(nil, "OVERLAY", nil, 6)
+    t:SetPoint(p1, wrapper, p1)
+    t:SetPoint(p2, wrapper, p2)
+    t:Hide()
+    return t
+end
+
+-- Region creation only (shared with PrewarmEngineHost): per edge the rect mask,
+-- the dash strip and its looping Translation, then the background strips,
+-- all hidden. The data table appears only once every region exists.
+local function _EnsureAnimAnts(wrapper)
+    local d = wrapper._euiAnimAnts
+    if d then return d end
+    d = { strips = {}, masks = {}, groups = {}, trs = {}, bgs = {} }
+    for i = 1, 4 do
+        local mask = wrapper:CreateMaskTexture()
+        mask:SetTexture(ANIM_MASK_TEX, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
+        local strip = wrapper:CreateTexture(nil, "OVERLAY", nil, 7)
+        strip:AddMaskTexture(mask)
+        strip:Hide()
+        local ag = strip:CreateAnimationGroup()
+        ag:SetLooping("REPEAT")
+        local tr = ag:CreateAnimation("Translation")
+        tr:SetSmoothing("NONE")
+        d.masks[i], d.strips[i], d.groups[i], d.trs[i] = mask, strip, ag, tr
+    end
+    -- Background strips: top, right, bottom, left (same order as the edges).
+    d.bgs[1] = _MkAntsBg(wrapper, "TOPLEFT", "TOPRIGHT")
+    d.bgs[2] = _MkAntsBg(wrapper, "TOPRIGHT", "BOTTOMRIGHT")
+    d.bgs[3] = _MkAntsBg(wrapper, "BOTTOMLEFT", "BOTTOMRIGHT")
+    d.bgs[4] = _MkAntsBg(wrapper, "TOPLEFT", "BOTTOMLEFT")
+    wrapper._euiAnimAnts = d
+    return d
+end
+
 -- Marching dashes: per edge, a dash strip one pattern-cycle longer than the edge slides
 -- by exactly one cycle and loops; a rect mask clips it to the edge, so the snap-back is
 -- invisible and the march is seamless. Strip texcoords carry the cumulative perimeter
@@ -965,34 +1016,7 @@ local function StartAnimatedAnts(wrapper, N, th, period, cr, cg, cb, w, h, ca, b
     local perim = 2 * (w + h)
     local P = perim / N              -- pixels per dash cycle
     local step = period / N          -- seconds per dash cycle
-    local d = wrapper._euiAnimAnts
-    if not d then
-        d = { strips = {}, masks = {}, groups = {}, trs = {}, bgs = {} }
-        wrapper._euiAnimAnts = d
-        for i = 1, 4 do
-            local mask = wrapper:CreateMaskTexture()
-            mask:SetTexture(ANIM_MASK_TEX, "CLAMPTOBLACKADDITIVE", "CLAMPTOBLACKADDITIVE")
-            local strip = wrapper:CreateTexture(nil, "OVERLAY", nil, 7)
-            strip:AddMaskTexture(mask)
-            local ag = strip:CreateAnimationGroup()
-            ag:SetLooping("REPEAT")
-            local tr = ag:CreateAnimation("Translation")
-            tr:SetSmoothing("NONE")
-            d.masks[i], d.strips[i], d.groups[i], d.trs[i] = mask, strip, ag, tr
-        end
-        -- Background strips: top, right, bottom, left (same order as the edges).
-        local function mkBg(p1, p2)
-            local t = wrapper:CreateTexture(nil, "OVERLAY", nil, 6)
-            t:SetPoint(p1, wrapper, p1)
-            t:SetPoint(p2, wrapper, p2)
-            t:Hide()
-            return t
-        end
-        d.bgs[1] = mkBg("TOPLEFT", "TOPRIGHT")
-        d.bgs[2] = mkBg("TOPRIGHT", "BOTTOMRIGHT")
-        d.bgs[3] = mkBg("BOTTOMLEFT", "BOTTOMRIGHT")
-        d.bgs[4] = mkBg("TOPLEFT", "BOTTOMLEFT")
-    end
+    local d = _EnsureAnimAnts(wrapper)
     for i = 1, 4 do
         local t = d.bgs[i]
         if bgR then
@@ -1005,47 +1029,49 @@ local function StartAnimatedAnts(wrapper, N, th, period, cr, cg, cb, w, h, ca, b
     end
     -- Edge order (clockwise): 1 top scrolls right, 2 right scrolls down,
     -- 3 bottom scrolls left, 4 left scrolls up. base = cumulative
-    -- perimeter phase in cycles at the edge's visual start.
-    local edges = {
-        { tex = DASH_H, len = w, dx = P,  dy = 0,  vert = false, base = 0 },
-        { tex = DASH_V, len = h, dx = 0,  dy = -P, vert = true,  base = w / P },
-        { tex = DASH_H, len = w, dx = -P, dy = 0,  vert = false, base = (w + h) / P },
-        { tex = DASH_V, len = h, dx = 0,  dy = P,  vert = true,  base = (w + h + w) / P },
-    }
+    -- perimeter phase in cycles at the edge's visual start. Computed per
+    -- edge in place (no per-call tables).
+    cr, cg, cb, ca = cr or 1, cg or 1, cb or 1, ca or 1
     for i = 1, 4 do
-        local e = edges[i]
         local mask, strip, ag, tr = d.masks[i], d.strips[i], d.groups[i], d.trs[i]
         ag:Stop()
-        strip:SetTexture(e.tex, "REPEAT", "REPEAT")
-        strip:SetVertexColor(cr or 1, cg or 1, cb or 1, ca or 1)
+        strip:SetVertexColor(cr, cg, cb, ca)
         mask:ClearAllPoints()
         strip:ClearAllPoints()
-        local cyc = (e.len + P) / P
-        if not e.vert then
-            mask:SetSize(e.len, th)
-            strip:SetSize(e.len + P, th)
+        if i == 1 or i == 3 then
+            local base = 0
+            if i == 3 then base = (w + h) / P end
+            strip:SetTexture(DASH_H, "REPEAT", "REPEAT")
+            mask:SetSize(w, th)
+            strip:SetSize(w + P, th)
             if i == 1 then
                 mask:SetPoint("TOPLEFT", wrapper, "TOPLEFT", 0, 0)
                 strip:SetPoint("TOPLEFT", wrapper, "TOPLEFT", -P, 0)
+                tr:SetOffset(P, 0)
             else
                 mask:SetPoint("BOTTOMLEFT", wrapper, "BOTTOMLEFT", 0, 0)
                 strip:SetPoint("BOTTOMLEFT", wrapper, "BOTTOMLEFT", 0, 0)
+                tr:SetOffset(-P, 0)
             end
-            strip:SetTexCoord(e.base, e.base + cyc, 0, 1)
+            strip:SetTexCoord(base, base + (w + P) / P, 0, 1)
         else
-            mask:SetSize(th, e.len)
-            strip:SetSize(th, e.len + P)
+            local base = w / P
+            if i == 4 then base = (w + h + w) / P end
+            strip:SetTexture(DASH_V, "REPEAT", "REPEAT")
+            mask:SetSize(th, h)
+            strip:SetSize(th, h + P)
             if i == 2 then
                 mask:SetPoint("TOPRIGHT", wrapper, "TOPRIGHT", 0, 0)
                 strip:SetPoint("TOPRIGHT", wrapper, "TOPRIGHT", 0, P)
+                tr:SetOffset(0, -P)
             else
                 mask:SetPoint("BOTTOMLEFT", wrapper, "BOTTOMLEFT", 0, 0)
                 strip:SetPoint("BOTTOMLEFT", wrapper, "BOTTOMLEFT", 0, -P)
+                tr:SetOffset(0, P)
             end
-            strip:SetTexCoord(0, 1, e.base, e.base + cyc)
+            strip:SetTexCoord(0, 1, base, base + (h + P) / P)
         end
         strip:Show()
-        tr:SetOffset(e.dx, e.dy)
         tr:SetDuration(step)
         ag:Play()
     end
@@ -1191,6 +1217,9 @@ do
     function G.HideStealableBorder(host)
         local tex = host and host._euiStealTex
         if tex then tex:Hide() end
+        -- StartSpecGlow's change check must not skip showing it again.
+        local s = host and host._euiSpecSig
+        if s and s.idx == G.STEALABLE_BORDER then s.idx = nil end
     end
 end
 
@@ -1244,7 +1273,7 @@ do
         engine = { true, true, false, false, true, true, true },
     }
 
-    -- Rectangles (cast bars, buff bars, whole-frame glows): the texture styles
+    -- Rectangles (buff bars, whole-frame glows): the texture styles
     -- (ABG, GCD, Modern, Classic) are square art that stretches on a wide bar,
     -- and Shape has no shape to follow, so only Pixel and Auto-Cast draw
     -- cleanly. Rectangle sites pass this as their excludes, in the options and
@@ -1284,10 +1313,9 @@ do
     function G.ResolveColor(mode, r, g, b, defR, defG, defB)
         if mode == "default" then return nil end
         if mode == "class" then
-            local c = EllesmereUI.GetClassColor and EllesmereUI._playerClass
-                and EllesmereUI.GetClassColor(EllesmereUI._playerClass)
-            if c then return c.r, c.g, c.b end
-            return 1, 1, 1
+            -- The palette colour (custom + Class Color Darken); an unknown class is white.
+            local c = EllesmereUI.GetClassColor(EllesmereUI._playerClass)
+            return c.r, c.g, c.b
         end
         if r ~= nil then return r, g or 0, b or 0 end
         return defR, defG, defB
@@ -1338,7 +1366,8 @@ do
         if t[k.bg] then
             out.bg, out.bgR, out.bgG, out.bgB = true, t[k.bgR] or 0, t[k.bgG] or 0, t[k.bgB] or 0
         else
-            out.bg = nil
+            -- out is the caller's reused scratch: clear the colour too.
+            out.bg, out.bgR, out.bgG, out.bgB = nil, nil, nil, nil
         end
         return out
     end
@@ -1372,16 +1401,26 @@ do
         if not (wrapper and spec) then return end
         local idx, converted = G.ResolveStyle(spec.style, host, spec.excludes)
         w = w or 36; h = h or w
+        local s = wrapper._euiSpecSig
         -- Blizzard Border: no glow, no parameters; nil color = Blizzard's art.
         if idx == G.STEALABLE_BORDER then
+            local r, g, b = spec.r, spec.g, spec.b
+            -- StopGlow leaves the host at alpha 0 and a caller may park it
+            -- there, so the alpha is re-asserted even when nothing changed.
+            wrapper:SetAlpha(1)
+            if s and s.idx == idx and s.w == w and s.h == h
+               and s.r == r and s.g == g and s.b == b then
+                return idx, false
+            end
             -- Clear the flag too (StopAllGlows keeps it), so later calls skip the teardown.
             if wrapper._euiGlowActive then StopAllGlows(wrapper); wrapper._euiGlowActive = false end
-            -- StopGlow leaves the host at alpha 0.
-            wrapper:SetAlpha(1)
-            G.ShowStealableBorder(wrapper, w, h, spec.r, spec.g, spec.b)
+            G.ShowStealableBorder(wrapper, w, h, r, g, b)
+            if not s then s = {}; wrapper._euiSpecSig = s end
+            s.idx, s.host, s.w, s.h, s.r, s.g, s.b = idx, host, w, h, r, g, b
             return idx, false
         end
-        G.HideStealableBorder(wrapper)
+        -- A shown Blizzard Border needs no separate hide: every start below
+        -- runs StopAllGlows first, which hides it and clears the signature.
         local entry = GLOW_STYLES[idx]
         local r, g, b = spec.r, spec.g, spec.b
         local isFlip = not (entry.procedural or entry.buttonGlow or entry.autocast or entry.shapeGlow)
@@ -1394,12 +1433,14 @@ do
         local N, th, period = spec.lines or 8, spec.thickness or 2, spec.speed or 4
         if extra and extra.panel then th = G.PanelThickness(th) end
         local bgOn = spec.bg and true or false
-        local bgR, bgG, bgB = spec.bgR or 0, spec.bgG or 0, spec.bgB or 0
+        -- An off background draws nothing, so its colour never counts (a
+        -- reused scratch spec can still carry an old one).
+        local bgR, bgG, bgB = 0, 0, 0
+        if bgOn then bgR, bgG, bgB = spec.bgR or 0, spec.bgG or 0, spec.bgB or 0 end
         local mask = extra and extra.maskWith or nil
         local maskPath = extra and extra.maskPath or nil
         local shapeMask = extra and extra.shapeMask or nil
 
-        local s = wrapper._euiSpecSig
         if s and wrapper._euiGlowActive and s.idx == idx and s.host == host
            and s.w == w and s.h == h and s.r == r and s.g == g and s.b == b
            and s.N == N and s.th == th and s.period == period
@@ -1439,19 +1480,22 @@ do
         return idx, converted
     end
 
-    -- Create every region an engine-hosted glow can ever need (animated ants
-    -- with background strips, FlipBook texture, atlas ants overlay, ABG halo)
-    -- once, hidden. Call it from the host's creation window (extraInit): a later
-    -- style or background change then only reconfigures existing regions.
-    local PREWARM_OPTS = { abgHalo = true }
-    function G.PrewarmEngineHost(wrapper, w, h)
-        if not wrapper or wrapper._euiPrewarmed then return end
-        wrapper._euiPrewarmed = true
-        w = w or 36; h = h or w
-        StartAnimatedAnts(wrapper, 8, 2, 4, 1, 1, 1, w, h)
-        StartFlipBookGlow(wrapper, w, GLOW_STYLES[6], 1, 1, 1, h, PREWARM_OPTS)
-        G.EnsureStealableBorder(wrapper)
-        StopAllGlows(wrapper)
+    -- Create the regions an engine-hosted glow can need, hidden and
+    -- unconfigured, from the host's creation window (extraInit): a later style
+    -- or background change then only reconfigures existing regions, and the
+    -- first StartSpecGlow does the only setup (nothing is sized, tinted or
+    -- played here). need = nil creates every family; else a table naming what
+    -- the site can draw: ants (Pixel's animated ants and their background
+    -- strips), flip (the FlipBook styles, with the atlas ants overlay and
+    -- ABG's halo), stealable (the Blizzard Border texture). Pass a file-scope
+    -- constant. w, h stay for call compatibility (creation needs no size).
+    -- Repeat calls are free: each family's data table appears only once its
+    -- regions exist.
+    function G.PrewarmEngineHost(wrapper, w, h, need)
+        if not wrapper then return end
+        if not need or need.ants then _EnsureAnimAnts(wrapper) end
+        if not need or need.flip then _EnsureFlip(wrapper, true, true) end
+        if not need or need.stealable then G.EnsureStealableBorder(wrapper) end
     end
 end
 

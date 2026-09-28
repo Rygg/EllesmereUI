@@ -64,12 +64,17 @@ ns.BlockFactories.bags = function(blockCfg, slot, content, barCtx)
         return bag ~= REAGENT_BAG or D().reagent == true
     end
 
-    -- Returns free, total across the counted bags.
+    -- Returns free, total across the counted bags. Only general-purpose bags
+    -- (family 0, as Blizzard's own free-space checks count): a quiver, soul
+    -- bag or profession bag cannot take ordinary loot.
     local function Count()
         local free, total = 0, 0
         for bag = 0, LAST_BAG do
-            total = total + (C_Container.GetContainerNumSlots(bag) or 0)
-            free = free + (C_Container.GetContainerNumFreeSlots(bag) or 0)
+            local nFree, family = C_Container.GetContainerNumFreeSlots(bag)
+            if not family or family == 0 then
+                total = total + (C_Container.GetContainerNumSlots(bag) or 0)
+                free = free + (nFree or 0)
+            end
         end
         if IncludeBag(REAGENT_BAG) then
             total = total + (C_Container.GetContainerNumSlots(REAGENT_BAG) or 0)
@@ -77,6 +82,10 @@ ns.BlockFactories.bags = function(blockCfg, slot, content, barCtx)
         end
         return free, total
     end
+
+    -- The counts on screen, from whichever path painted last (an event, a
+    -- hover, a settings change): the event gate compares against these.
+    local lastFree, lastTotal
 
     function inst:Refresh()
         local s = D()
@@ -86,6 +95,7 @@ ns.BlockFactories.bags = function(blockCfg, slot, content, barCtx)
         local isSide = barCtx.IsVertical()
 
         local free, total = Count()
+        lastFree, lastTotal = free, total
         local mode = s.value or "free"
         local text
         if mode == "used" then
@@ -204,11 +214,18 @@ ns.BlockFactories.bags = function(blockCfg, slot, content, barCtx)
         if mb == "LeftButton" then ToggleAllBags() end
     end)
 
-    inst.eventFrame = MakeEventFrame(inst, function(self)
+    -- Most bag batches (a potion, stacking, sorting) leave the counts on
+    -- screen unchanged, and those skip the repaint.
+    inst.eventFrame = MakeEventFrame(inst, function(self, event)
+        if event == "BAG_UPDATE_DELAYED" then
+            local free, total = Count()
+            if free == lastFree and total == lastTotal then return end
+        end
         self:Refresh()
     end)
 
     function inst:Enable()
+        lastFree, lastTotal = nil, nil
         content:Show()
         RegisterInstEvents(self)
     end

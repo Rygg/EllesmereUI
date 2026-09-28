@@ -226,22 +226,6 @@ initFrame:SetScript("OnEvent", function(self)
     end
 
     ---------------------------------------------------------------------------
-    --  Pandemic Glow shared helpers (used by CDM Bars options page)
-    ---------------------------------------------------------------------------
-
-    -- Pandemic glow style dropdown values (excludes ShapeGlow, adds "None")
-    local PAN_GLOW_VALUES = { [0] = "None", [-1] = "Blizzard Default" }
-    local PAN_GLOW_ORDER  = { 0, -1 }
-    if ns.GLOW_STYLES then
-        for _, i in ipairs(ns.GLOW_VIEW.ordered) do local entry = ns.GLOW_STYLES[i]
-            if not entry.shapeGlow then
-                PAN_GLOW_VALUES[i] = entry.name
-                PAN_GLOW_ORDER[#PAN_GLOW_ORDER + 1] = i
-            end
-        end
-    end
-
-    ---------------------------------------------------------------------------
     --  Glow sites for Global Settings > Glows: per-bar Pandemic Glow, Buff Glow
     --  and Pixel Glow parameters, Tracked Buff Bars (active spec) and Rotation
     --  Assist, as shared glow descriptors over the bars' own keys.
@@ -277,21 +261,32 @@ initFrame:SetScript("OnEvent", function(self)
         local function PandemicSet(bd, f, a, b2, c2)
             if f == "style" then
                 if a == 0 then bd.pandemicGlow = false else bd.pandemicGlow = true; bd.pandemicGlowStyle = a end
-            elseif f == "mode" then bd.pandemicGlowMode = a
+            elseif f == "mode" then
+                bd.pandemicGlowMode = a
+                -- Custom with no color stored draws the default look on the bar
+                -- while the swatch and the preview show yellow: store it.
+                if a == "custom" and not bd.pandemicGlowColor then
+                    bd.pandemicGlowColor = { r = 1, g = 1, b = 0 }
+                end
             else EllesmereUI.GlowOptions.FlatSet(bd, "pandemicGlow", f, a, b2, c2)
             end
         end
 
-        -- Pandemic Glow of one CDM bar. nil pandemicGlow = never configured =
-        -- Blizzard Default (see the bar page's Pandemic Glow dropdown).
-        local function PandemicDesc(bd)
+        -- Pandemic Glow of one CDM bar, shared by the Glows page and the CDM Bars
+        -- page row. getBd resolves the bar at call time; onChange defaults to the
+        -- shared rebuild (the bar page passes its own). nil pandemicGlow = never
+        -- configured = Blizzard Default, not None: the built-in bars never seed the
+        -- key (the templates that do ship true + -1) and Blizzard's PandemicIcon
+        -- still draws for them, so only an explicit false reads as None.
+        local function PandemicDesc(getBd, onChange)
             return {
                 view = ns.GLOW_VIEW, host = "icon", excludes = { [4] = true },
                 extras = { { value = -1, label = "Blizzard Default" } },
                 caps = { mode = true, params = true, bg = true },
                 defaultColor = { r = 1, g = 1, b = 0 },
-                onChange = Rebuild,
+                onChange = onChange or Rebuild,
                 get = function(f)
+                    local bd = getBd(); if not bd then return nil end
                     if f == "style" then
                         if bd.pandemicGlow == false then return 0 end
                         if bd.pandemicGlow == nil then return -1 end
@@ -299,18 +294,23 @@ initFrame:SetScript("OnEvent", function(self)
                     end
                     return PandemicGet(bd, f)
                 end,
-                set = function(f, a, b2, c2) PandemicSet(bd, f, a, b2, c2) end,
+                set = function(f, a, b2, c2)
+                    local bd = getBd(); if bd then PandemicSet(bd, f, a, b2, c2) end
+                end,
             }
         end
+        ns._CDM_PandemicGlowDesc = PandemicDesc
 
-        -- Buff Glow of one buff-family bar (flat buffGlow* keys).
-        local function BuffGlowDesc(bd)
+        -- Buff Glow of one buff-family bar (flat buffGlow* keys); getBd and
+        -- onChange as for PandemicDesc.
+        local function BuffGlowDesc(getBd, onChange)
             return {
                 view = ns.GLOW_VIEW, host = "icon", excludes = { [4] = true },
                 caps = { mode = true, params = true, bg = true },
                 defaultColor = { r = 1, g = 0.788, b = 0.137 },
-                onChange = RebuildBuffGlows,
+                onChange = onChange or RebuildBuffGlows,
                 get = function(f)
+                    local bd = getBd(); if not bd then return nil end
                     if f == "style" then return bd.buffGlowType or 0
                     elseif f == "mode" then return bd.buffGlowMode or "default"
                     elseif f == "color" then
@@ -325,6 +325,7 @@ initFrame:SetScript("OnEvent", function(self)
                     end
                 end,
                 set = function(f, a, b2, c2)
+                    local bd = getBd(); if not bd then return end
                     if f == "style" then bd.buffGlowType = a
                     elseif f == "mode" then bd.buffGlowMode = a
                     elseif f == "color" then bd.buffGlowR, bd.buffGlowG, bd.buffGlowB = a, b2, c2
@@ -337,6 +338,7 @@ initFrame:SetScript("OnEvent", function(self)
                 end,
             }
         end
+        ns._CDM_BuffGlowDesc = BuffGlowDesc
 
         -- Pixel Glow parameters of a cooldown bar: the per-spell glows assigned on
         -- its icons read these (no style or color of their own).
@@ -379,7 +381,7 @@ initFrame:SetScript("OnEvent", function(self)
                 onChange = onChange,
                 get = function(f)
                     local bd = getBd(); if not bd then return nil end
-                    if f == "style" then return ns.PG_TbbEffectiveStyle and ns.PG_TbbEffectiveStyle(bd) or 1 end
+                    if f == "style" then return ns.PG_TbbEffectiveStyle(bd) end
                     return PandemicGet(bd, f)
                 end,
                 set = function(f, a, b2, c2)
@@ -394,15 +396,44 @@ initFrame:SetScript("OnEvent", function(self)
         local ROT_TO_SHARED = { pixel = 1, button = 2, autocast = 3, shape = 4, gcd = 5, modern = 6, classic = 7 }
         local SHARED_TO_ROT = {}
         for k, v in pairs(ROT_TO_SHARED) do SHARED_TO_ROT[v] = k end
+        -- Why the CDM highlight cannot show, nil while it can: Blizzard's
+        -- Assisted Highlight off (always on Forever) or Show Rotation Helper off.
+        local function RotationLockTip()
+            if not ns.RotationAssistAvailable() then
+                return "This option requires Blizzard's Assisted Highlight to be enabled"
+            end
+            local c = CdmBars()
+            if c and c.hideRotationHelper then return "Show Rotation Helper" end
+        end
+        local function RotationHelperOff() return RotationLockTip() ~= nil end
+        -- The CDM Bars page builds its Rotation Assist rows only while this is false.
+        ns._CDM_RotationHelperOff = RotationHelperOff
+        -- Blizzard's Assisted Highlight switched in its own options (fires only on
+        -- a real change): those rows were built for the old state, and a cached
+        -- page comes back without a rebuild. Drop the cached CDM pages and rebuild
+        -- the one on screen (a closed panel rebuilds on its next show); the Glows
+        -- page lists this site per build. Not on Forever.
+        if not EllesmereUI.IS_FOREVER then
+            EventRegistry:RegisterCallback("AssistedCombatManager.OnSetUseAssistedHighlight", function()
+                EllesmereUI:InvalidateModulePageCache("EllesmereUICooldownManager")
+                local m = EllesmereUI:GetActiveModule()
+                if m == "EllesmereUICooldownManager"
+                    or (m == EllesmereUI.GLOBAL_KEY and EllesmereUI:GetActivePage() == "Glows") then
+                    EllesmereUI:RefreshPage(true)
+                end
+            end, "ECME_Options_AssistedHighlight")
+        end
         local function RotationDesc()
             local desc = {
                 host = "icon", noNone = true,
                 toShared = function(v) return ROT_TO_SHARED[v] end,
                 fromShared = function(i) return SHARED_TO_ROT[i] end,
                 order = { "pixel", "shape", "button", "autocast", "gcd", "modern", "classic" },
-                extras = { { value = "blizzard", label = "Blizzard Default" }, { value = "solid", label = "Solid Border" } },
+                extras = { { value = "blizzard", label = "Blizzard Default" }, { value = "solid", label = "Solid Border", colored = true } },
                 caps = { mode = true, params = true, bg = true }, thicknessMax = 8,
                 defaultColor = { r = 1, g = 0, b = 0 },
+                -- Off and locked while the highlight cannot show.
+                isOff = RotationHelperOff, disabled = RotationHelperOff, disabledTooltip = RotationLockTip,
                 onChange = function() if ns.UpdateRotationHighlights then ns.UpdateRotationHighlights() end end,
                 get = function(f)
                     local c = CdmBars(); if not c then return nil end
@@ -446,19 +477,33 @@ initFrame:SetScript("OnEvent", function(self)
                 and (bd.barType == "cooldowns" or bd.barType == "utility")
         end
 
-        if GO and ns.GLOW_VIEW then
+        do
             -- Open Settings targets: the CDM Bars page with the bar selected first.
             local function BarNav(key, section, highlight)
                 return { page = PAGE_CDM_BARS, section = section, highlight = highlight,
                     preSelect = function() if EllesmereUI._setCDMBar then EllesmereUI._setCDMBar(key) end end }
             end
-            -- sub: the group heading on the Glows page card (General, one
-            -- per bar, Tracking Bars); labels stay short beneath it.
-            GO.RegisterSite({ id = "cdm_rotation", label = "Rotation Assist Style", group = "bar",
-                sub = EllesmereUI.L("General"),
-                module = "EllesmereUICooldownManager", desc = RotationDesc(),
-                page = PAGE_CDM_BARS, section = "EXTRAS", highlight = "Rotation Assist Style",
-                preSelect = BarNav("cooldowns").preSelect })
+            -- Rotation Assist, listed per page build: while the highlight cannot
+            -- show, the row reads None and Off, stays locked and opens Show
+            -- Rotation Helper (the style has no None of its own, so only that
+            -- listing offers one). Not on Forever: no Assisted Highlight there.
+            if not EllesmereUI.IS_FOREVER then
+                local rotOn = { { label = "Rotation Assist Style", desc = RotationDesc() } }
+                local offDesc = RotationDesc()
+                offDesc.noNone = nil
+                -- Locked for good: a cached page keeps this listing until it rebuilds.
+                offDesc.disabled = function() return true end
+                local rotOff = { { label = "Rotation Assist Style", desc = offDesc,
+                    nav = BarNav("cooldowns", "EXTRAS", "Show Rotation Helper") } }
+                -- sub: the group heading on the Glows page card (General, one
+                -- per bar, Tracking Bars); labels stay short beneath it.
+                GO.RegisterSite({ id = "cdm_rotation", label = "Rotation Assist Style", group = "bar",
+                    sub = EllesmereUI.L("General"),
+                    module = "EllesmereUICooldownManager",
+                    page = PAGE_CDM_BARS, section = "EXTRAS", highlight = "Rotation Assist Style",
+                    preSelect = BarNav("cooldowns").preSelect,
+                    list = function() return RotationHelperOff() and rotOff or rotOn end })
+            end
             -- Per-icon glows and Bar Glows stay per entry (never template targets):
             -- hint entries counting the active spec's own settings. Read-only, raw
             -- entry values only (inherited bar tiers and explicit false don't count).
@@ -527,11 +572,11 @@ initFrame:SetScript("OnEvent", function(self)
                         if not bd.isGhostBar and bd.barType ~= "custom_buff" then
                             local name = EllesmereUI.L(bd.name or bd.key or "?")
                             if ns.CDM_BarHasExtras(bd) then
-                                out[#out + 1] = { label = "Pandemic Glow", sub = name, desc = PandemicDesc(bd),
+                                out[#out + 1] = { label = "Pandemic Glow", sub = name, desc = PandemicDesc(function() return bd end),
                                     nav = BarNav(bd.key, "EXTRAS", "Pandemic Glow") }
                             end
                             if ns.IsBarBuffFamily and ns.IsBarBuffFamily(bd) then
-                                out[#out + 1] = { label = "Buff Glow", sub = name, desc = BuffGlowDesc(bd),
+                                out[#out + 1] = { label = "Buff Glow", sub = name, desc = BuffGlowDesc(function() return bd end),
                                     nav = BarNav(bd.key, "ICON DISPLAY", "Buff Glow") }
                             elseif ns.CDM_BarHasPixelRow(bd) then
                                 out[#out + 1] = { label = "Pixel Glow", sub = name, desc = PixelParamsDesc(bd),
@@ -555,284 +600,6 @@ initFrame:SetScript("OnEvent", function(self)
     -- Cross-surface pandemic-glow sync (CDM bars + Nameplates) lives in CDM core as
     -- ApplyPandemicGlowToAll/IsPandemicGlowSyncedToAll (best-effort, name-based so styles
     -- never shift across surfaces); callers build a payload via PandemicPayloadFrom*.
-
-    -- Pandemic glow preview icon in a DualRow half; anchorRgn defaults to the row's right
-    -- half (row._rightRegion, TBB layout) -- CDM anchors inline in the left half instead.
-    local function BuildPandemicPreview(row, isOffFn, getDataFn, anchorRgn)
-        local SIDE_PAD = 20
-        local iconSize = 36
-        local iconFrame = CreateFrame("Frame", nil, row)
-        PP.Size(iconFrame, iconSize, iconSize)
-        if anchorRgn then
-            PP.Point(iconFrame, "RIGHT", anchorRgn._control, "LEFT", -8, 0)
-        else
-            PP.Point(iconFrame, "RIGHT", row, "RIGHT", -SIDE_PAD, 0)
-        end
-
-        local iconTex = iconFrame:CreateTexture(nil, "ARTWORK")
-        iconTex:SetAllPoints()
-        iconTex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-        iconTex:SetTexture(136197)
-
-        local onePx = PP.Scale(1)
-        for _, info in ipairs({
-            {"TOPLEFT", "TOPRIGHT", true}, {"BOTTOMLEFT", "BOTTOMRIGHT", true},
-            {"TOPLEFT", "BOTTOMLEFT", false}, {"TOPRIGHT", "BOTTOMRIGHT", false},
-        }) do
-            local t = iconFrame:CreateTexture(nil, "OVERLAY", nil, 7)
-            t:SetColorTexture(0, 0, 0, 1)
-            if t.SetSnapToPixelGrid then t:SetSnapToPixelGrid(false); t:SetTexelSnappingBias(0) end
-            PP.Point(t, info[1], iconFrame, info[1], 0, 0)
-            PP.Point(t, info[2], iconFrame, info[2], 0, 0)
-            if info[3] then t:SetHeight(onePx) else t:SetWidth(onePx) end
-        end
-
-        local glowOvr = CreateFrame("Frame", nil, iconFrame)
-        glowOvr:SetAllPoints(iconFrame)
-        glowOvr:SetFrameLevel(iconFrame:GetFrameLevel() + 2)
-        glowOvr:EnableMouse(false)
-        glowOvr._euiGlowPreview = true  -- exempt from Show Glows Only in Combat
-
-        local function RefreshPreview()
-            -- Through the CDM wrapper, not Glows directly: it also clears this
-            -- overlay's glow record, so a preview left off keeps no stale one.
-            ns.StopNativeGlow(glowOvr)
-            if isOffFn() then
-                iconFrame:SetAlpha(0.3)
-                return
-            end
-            iconFrame:SetAlpha(1)
-            local bd = getDataFn()
-            if not bd then return end
-            local style = bd.pandemicGlowStyle or 1
-            local c
-            if bd.pandemicGlowMode == "class" then
-                c = EllesmereUI.GetClassColor(EllesmereUI._playerClass)
-            elseif bd.pandemicGlowMode == "custom" then
-                c = bd.pandemicGlowColor
-            end
-            local glowOpts = (style == 1) and {
-                panel = true,
-                N = bd.pandemicGlowLines or 8,
-                th = bd.pandemicGlowThickness or 2,
-                period = bd.pandemicGlowSpeed or 4,
-                bg = bd.pandemicGlowBackground and {
-                    r = (bd.pandemicGlowBackgroundColor and bd.pandemicGlowBackgroundColor.r) or 0,
-                    g = (bd.pandemicGlowBackgroundColor and bd.pandemicGlowBackgroundColor.g) or 0,
-                    b = (bd.pandemicGlowBackgroundColor and bd.pandemicGlowBackgroundColor.b) or 0,
-                } or nil,
-            } or nil
-            ns.StartNativeGlow(glowOvr, style, c and c.r, c and c.g, c and c.b, glowOpts)
-        end
-        RefreshPreview()
-
-        local previewLabel = not anchorRgn and ({ row._rightRegion:GetRegions() })[1]
-        EllesmereUI.RegisterWidgetRefresh(function()
-            local off = isOffFn()
-            iconFrame:SetAlpha(off and 0.3 or 1)
-            if previewLabel and previewLabel.SetAlpha then
-                previewLabel:SetAlpha(off and 0.3 or 1)
-            end
-            RefreshPreview()
-        end)
-
-        row._refreshPreview = RefreshPreview
-        return iconFrame
-    end
-
-    -- Pixel glow cog popup for pandemic settings. getDataFn returns the settings table;
-    -- refreshFn runs after changes.
-    local _sharedPgPopup, _sharedPgPopupOwner
-    -- Default key set: pandemic glow. Other callers (e.g. Buff Glow) pass their
-    -- own keys so the shared popup reads/writes that feature's Lines/Thickness/Speed.
-    local PG_DEFAULT_KEYS = { lines = "pandemicGlowLines", thickness = "pandemicGlowThickness", speed = "pandemicGlowSpeed", background = "pandemicGlowBackground", backgroundColor = "pandemicGlowBackgroundColor" }
-    local function ShowPandemicPixelGlowPopup(anchorBtn, getDataFn, refreshFn, keys)
-        -- Bind data source before popup creation so slider getValue callbacks work
-        if _sharedPgPopup then
-            _sharedPgPopup._getData = getDataFn
-            _sharedPgPopup._refresh = refreshFn
-            _sharedPgPopup._keys = keys or PG_DEFAULT_KEYS
-        end
-        if not _sharedPgPopup then
-            local SolidTex   = EllesmereUI.SolidTex
-            local MakeBorder = EllesmereUI.MakeBorder
-            local MakeFont   = EllesmereUI.MakeFont
-            local BuildSliderCore = EllesmereUI.BuildSliderCore
-            local BuildToggleControl = EllesmereUI.BuildToggleControl
-            local BuildColorSwatch = EllesmereUI.BuildColorSwatch
-            local BORDER_COLOR   = EllesmereUI.BORDER_COLOR
-
-            local SIDE_PAD = 14; local TOP_PAD = 14
-            local TITLE_H = 11; local TITLE_GAP = 10; local GAP = 10
-            local ROW_H = 24; local POPUP_INPUT_A = 0.55
-            local INPUT_W = 34; local SLIDER_INPUT_GAP = 8; local LABEL_SLIDER_GAP = 12
-            local MIN_POPUP_W = 180
-
-            local totalH = TOP_PAD + TITLE_H + TITLE_GAP + (GAP * 5) + (ROW_H * 5) + TOP_PAD
-
-            local pf = CreateFrame("Frame", nil, UIParent)
-            pf:SetSize(260, totalH); pf:SetFrameStrata("DIALOG"); pf:SetFrameLevel(200)
-            pf:EnableMouse(true); pf:Hide()
-            -- Match panel/popup scale of the shared BuildCogPopup popups.
-            pf:SetScale((EllesmereUI.GetPopupScale()) or 1)
-            if EllesmereUI._popupFrames then
-                EllesmereUI._popupFrames[#EllesmereUI._popupFrames + 1] = { popup = pf }
-            end
-            pf._getData = getDataFn
-            pf._refresh = refreshFn
-            pf._keys = keys or PG_DEFAULT_KEYS
-
-            local bg = SolidTex(pf, "BACKGROUND", 0.06, 0.08, 0.10, 0.95); bg:SetAllPoints()
-            MakeBorder(pf, BORDER_COLOR.r, BORDER_COLOR.g, BORDER_COLOR.b, 0.15)
-
-            local titleFS = MakeFont(pf, 11, "", 1, 1, 1); titleFS:SetAlpha(0.7)
-            titleFS:SetPoint("TOP", pf, "TOP", 0, -TOP_PAD); titleFS:SetText(EllesmereUI.L("Pixel Glow Settings"))
-
-            local tmpFS = pf:CreateFontString(nil, "OVERLAY")
-            tmpFS:SetFont(EllesmereUI.EXPRESSWAY or "Fonts\\FRIZQT__.TTF", 11, "")
-            local maxLblW = 0
-            for _, txt in ipairs({"Lines", "Thickness", "Speed", "Background", "Background Color"}) do
-                tmpFS:SetText(txt); local w = tmpFS:GetStringWidth(); if w > maxLblW then maxLblW = w end
-            end
-            tmpFS:Hide(); if maxLblW < 10 then maxLblW = 60 end
-
-            local SLIDER_LEFT = SIDE_PAD + maxLblW + LABEL_SLIDER_GAP
-            local SLIDER_W = math.max(80, 260 - SLIDER_LEFT - SLIDER_INPUT_GAP - INPUT_W - SIDE_PAD)
-            local POPUP_W = math.max(MIN_POPUP_W, SLIDER_LEFT + SLIDER_W + SLIDER_INPUT_GAP + INPUT_W + SIDE_PAD)
-            pf:SetWidth(POPUP_W)
-
-            local r1Y = -(TOP_PAD + TITLE_H + TITLE_GAP + GAP)
-            local lbl1 = MakeFont(pf, 11, nil, 1, 1, 1); lbl1:SetAlpha(0.6)
-            lbl1:SetText(EllesmereUI.L("Lines")); lbl1:SetPoint("TOPLEFT", pf, "TOPLEFT", SIDE_PAD, r1Y)
-            local t1, v1 = BuildSliderCore(pf, SLIDER_W, 4, 12, INPUT_W, ROW_H, 11, POPUP_INPUT_A,
-                2, 16, 1,
-                function() local d = pf._getData(); return d and d[pf._keys.lines] or 8 end,
-                function(v) local d = pf._getData(); if d then d[pf._keys.lines] = v end; if pf._refresh then pf._refresh() end end, true)
-            t1:SetPoint("TOPLEFT", pf, "TOPLEFT", SLIDER_LEFT, r1Y - 2)
-            v1:ClearAllPoints(); v1:SetPoint("TOPRIGHT", pf, "TOPRIGHT", -SIDE_PAD, r1Y)
-
-            local r2Y = r1Y - ROW_H - GAP
-            local lbl2 = MakeFont(pf, 11, nil, 1, 1, 1); lbl2:SetAlpha(0.6)
-            lbl2:SetText(EllesmereUI.L("Thickness")); lbl2:SetPoint("TOPLEFT", pf, "TOPLEFT", SIDE_PAD, r2Y)
-            local t2, v2 = BuildSliderCore(pf, SLIDER_W, 4, 12, INPUT_W, ROW_H, 11, POPUP_INPUT_A,
-                1, 4, 1,
-                function() local d = pf._getData(); return d and d[pf._keys.thickness] or 2 end,
-                function(v) local d = pf._getData(); if d then d[pf._keys.thickness] = v end; if pf._refresh then pf._refresh() end end, true)
-            t2:SetPoint("TOPLEFT", pf, "TOPLEFT", SLIDER_LEFT, r2Y - 2)
-            v2:ClearAllPoints(); v2:SetPoint("TOPRIGHT", pf, "TOPRIGHT", -SIDE_PAD, r2Y)
-
-            local r3Y = r2Y - ROW_H - GAP
-            local lbl3 = MakeFont(pf, 11, nil, 1, 1, 1); lbl3:SetAlpha(0.6)
-            lbl3:SetText(EllesmereUI.L("Speed")); lbl3:SetPoint("TOPLEFT", pf, "TOPLEFT", SIDE_PAD, r3Y)
-            local t3, v3 = BuildSliderCore(pf, SLIDER_W, 4, 12, INPUT_W, ROW_H, 11, POPUP_INPUT_A,
-                1, 8, 1,
-                function() local d = pf._getData(); local p = d and d[pf._keys.speed] or 4; return 9 - p end,
-                function(v) local d = pf._getData(); if d then d[pf._keys.speed] = 9 - v end; if pf._refresh then pf._refresh() end end, true)
-            t3:SetPoint("TOPLEFT", pf, "TOPLEFT", SLIDER_LEFT, r3Y - 2)
-            v3:ClearAllPoints(); v3:SetPoint("TOPRIGHT", pf, "TOPRIGHT", -SIDE_PAD, r3Y)
-
-            local r4Y = r3Y - ROW_H - GAP
-            local lbl4 = MakeFont(pf, 11, nil, 1, 1, 1); lbl4:SetAlpha(0.6)
-            lbl4:SetText(EllesmereUI.L("Background")); lbl4:SetPoint("TOPLEFT", pf, "TOPLEFT", SIDE_PAD, r4Y)
-            local bgToggle, _, bgSnap = BuildToggleControl(pf, pf:GetFrameLevel() + 2,
-                function()
-                    local d = pf._getData(); local k = pf._keys.background
-                    return d and k and d[k] == true
-                end,
-                function(v)
-                    local d = pf._getData(); local k = pf._keys.background
-                    if d and k then d[k] = v and true or nil end
-                    if pf._refresh then pf._refresh() end
-                end, { sizeRatio = 0.8, noAnim = true })
-            bgToggle:SetPoint("RIGHT", pf, "TOPRIGHT", -SIDE_PAD, r4Y - ROW_H / 2)
-
-            local r5Y = r4Y - ROW_H - GAP
-            local lbl5 = MakeFont(pf, 11, nil, 1, 1, 1); lbl5:SetAlpha(0.6)
-            lbl5:SetText(EllesmereUI.L("Background Color")); lbl5:SetPoint("TOPLEFT", pf, "TOPLEFT", SIDE_PAD, r5Y)
-            local bgSwatch, bgUpdate = BuildColorSwatch(pf, pf:GetFrameLevel() + 2,
-                function()
-                    local d = pf._getData(); local k = pf._keys.backgroundColor
-                    local c = d and k and d[k]
-                    if c then return c.r or 0, c.g or 0, c.b or 0 end
-                    return 0, 0, 0
-                end,
-                function(r, g, b)
-                    local d = pf._getData(); local k = pf._keys.backgroundColor
-                    if d and k then d[k] = { r = r, g = g, b = b } end
-                    if pf._refresh then pf._refresh() end
-                end, false, 20)
-            bgSwatch:ClearAllPoints()
-            bgSwatch:SetPoint("RIGHT", pf, "TOPRIGHT", -SIDE_PAD, r5Y - ROW_H / 2)
-            local bgBlock = CreateFrame("Frame", nil, bgSwatch)
-            bgBlock:SetAllPoints(); bgBlock:SetFrameLevel(bgSwatch:GetFrameLevel() + 10); bgBlock:EnableMouse(true)
-            bgBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(bgSwatch, EllesmereUI.DisabledTooltip("Pixel Glow Background"))
-            end)
-            bgBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            local function UpdateBgControls()
-                if bgSnap then bgSnap() end
-                if bgUpdate then bgUpdate() end
-                local d = pf._getData()
-                local k = pf._keys.background
-                local on = d and k and d[k] == true
-                bgSwatch:SetAlpha(on and 1 or 0.3)
-                if on then bgBlock:Hide() else bgBlock:Show() end
-            end
-            bgToggle:HookScript("OnClick", UpdateBgControls)
-            pf._refreshControls = UpdateBgControls
-            UpdateBgControls()
-
-            local wasDown = false
-            pf:SetScript("OnHide", function(self)
-                self:SetScript("OnUpdate", nil)
-                local owner = _sharedPgPopupOwner
-                _sharedPgPopupOwner = nil
-                if owner and owner._euiCogState then owner._euiCogState() end
-            end)
-            pf._clickOutside = function(self, _)
-                local down = IsMouseButtonDown("LeftButton")
-                if down and not wasDown then
-                    if not self:IsMouseOver() and not (_sharedPgPopupOwner and _sharedPgPopupOwner:IsMouseOver()) then
-                        self:Hide()
-                    end
-                end
-                wasDown = down
-            end
-            if EllesmereUI._mainFrame then
-                EllesmereUI._mainFrame:HookScript("OnHide", function()
-                    if pf:IsShown() then pf:Hide() end
-                end)
-            end
-            _sharedPgPopup = pf
-        end
-
-        if _sharedPgPopupOwner == anchorBtn and _sharedPgPopup:IsShown() then
-            _sharedPgPopup:Hide(); return
-        end
-        _sharedPgPopup._getData = getDataFn
-        _sharedPgPopup._refresh = refreshFn
-        _sharedPgPopup._keys = keys or PG_DEFAULT_KEYS
-        if _sharedPgPopup._refreshControls then _sharedPgPopup._refreshControls() end
-        local prevOwner = _sharedPgPopupOwner
-        _sharedPgPopupOwner = anchorBtn
-        if prevOwner and prevOwner ~= anchorBtn and prevOwner._euiCogState then prevOwner._euiCogState() end
-
-        _sharedPgPopup:ClearAllPoints()
-        _sharedPgPopup:SetPoint("BOTTOM", anchorBtn, "TOP", 0, 6)
-        _sharedPgPopup:SetAlpha(0); _sharedPgPopup:Show()
-        local elapsed = 0
-        _sharedPgPopup:SetScript("OnUpdate", function(self, dt)
-            elapsed = elapsed + dt; local t = math.min(elapsed / 0.15, 1)
-            self:SetAlpha(t); self:ClearAllPoints()
-            self:SetPoint("BOTTOM", anchorBtn, "TOP", 0, 6 + (-8 * (1 - t)))
-            if t >= 1 then self:SetScript("OnUpdate", self._clickOutside) end
-        end)
-    end
-
-    local function PgPopupOpenFor(btn)
-        return _sharedPgPopupOwner == btn and _sharedPgPopup and _sharedPgPopup:IsShown()
-    end
 
     -- Check if a specific bar target uses a custom shape (not "none"/"cropped").
     -- barIdx can be a number 1-8 (action bar) or a string (CDM bar key).
@@ -2871,21 +2638,27 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         local _, _tbbPClass = UnitClass("player")
+        local nPopular = 0
         for _, entry in ipairs(popular) do
             -- tbbOnly presets (e.g. debuff-driven Bloodlust) carry a sentinel class to hide
             -- from the cooldown/utility item picker; the TBB picker overrides that and always shows them.
             if entry.tbbOnly or not entry.class or entry.class == _tbbPClass then
                 MakePopularItem(entry)
+                nPopular = nPopular + 1
             end
         end
 
         -- "Buffs" section always renders (even with no tracked bars) so the Missing Spells prompt below stays visible.
+        -- Its divider closes the preset rows, so it is skipped when none were built
+        -- (WoW Forever has no presets): the one above already separates Custom Buff ID.
         do
-            local div2 = inner:CreateTexture(nil, "ARTWORK")
-            div2:SetHeight(1); div2:SetColorTexture(1, 1, 1, 0.10)
-            div2:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH - 4)
-            div2:SetPoint("TOPRIGHT", inner, "TOPRIGHT", -1, -mH - 4)
-            mH = mH + 9
+            if nPopular > 0 then
+                local div2 = inner:CreateTexture(nil, "ARTWORK")
+                div2:SetHeight(1); div2:SetColorTexture(1, 1, 1, 0.10)
+                div2:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH - 4)
+                div2:SetPoint("TOPRIGHT", inner, "TOPRIGHT", -1, -mH - 4)
+                mH = mH + 9
+            end
 
             local buffHdr = inner:CreateFontString(nil, "OVERLAY")
             buffHdr:SetFont(FONT_PATH, 10, GetCDMOptOutline())
@@ -3782,13 +3555,160 @@ initFrame:SetScript("OnEvent", function(self)
             end
             UpdateDDLabel()
 
+            -- Can this bar play Audio on Buff Gain / Loss? The one check behind the
+            -- row right-click, the speaker mark and the menu hint. A sound follows a
+            -- buff edge: the bar needs a buff assigned and tracked as a buff (never a
+            -- cooldown-tracking bar), and the runtime needs an edge source for it (a
+            -- Blizzard buff viewer frame, or a self-timed preset).
+            local function BarTakesSound(b)
+                if not b or b.trackType == "cooldown" then return false end
+                if not ((b.spellID and b.spellID > 0) or b.glowBased) then return false end
+                return ns.TBB_BarCanCue(b) and true or false
+            end
+
+            -- Right-click a bar row: Audio on Buff Gain / Loss for that bar, the
+            -- tracking-bar twin of the CDM icon menu's two audio rows. Opens beside the
+            -- clicked row; each row flies out the shared sound list (search, scroll,
+            -- preview speaker) from BuildSoundDropdownValues. Same keys and sound
+            -- catalogue as the icon menu; playback lives in EllesmereUICdmBuffBars.
+            local function OpenBarSoundMenu(idx, anchorRow)
+                local t = ns.GetTrackedBuffBars()
+                local cfg = t.bars and t.bars[idx]
+                if not cfg then return end
+                if ddBtn._tbbSndMenu then ddBtn._tbbSndMenu:Hide() end
+                local W = 240
+                local sm = CreateFrame("Frame", nil, UIParent)
+                sm:SetFrameStrata("FULLSCREEN_DIALOG")
+                -- Above the bar menu it opens from (300), which stays open underneath.
+                sm:SetFrameLevel(320)
+                sm:SetClampedToScreen(true)
+                sm:EnableMouse(true)
+                sm:SetSize(W, 8 + ITEM_H * 2)
+                local smBg = sm:CreateTexture(nil, "BACKGROUND")
+                smBg:SetAllPoints(); smBg:SetColorTexture(mBgR, mBgG, mBgB, mBgHA)
+                EllesmereUI.MakeBorder(sm, 1, 1, 1, mBrdA, EllesmereUI.PP)
+                -- A fixed spot, as the CDM icon menu sits under its icon: beside the clicked
+                -- row, just outside the bar menu, so it covers no other bar.
+                sm:SetPoint("TOPLEFT", anchorRow, "TOPRIGHT", 4, 0)
+                local ar, ag, ab = EllesmereUI.GetAccentColor()
+                local names = ns.FOCUSKICK_SOUND_NAMES or {}
+                local flyouts = {}
+
+                local function MakeSoundRow(i, label, field)
+                    local row = CreateFrame("Button", nil, sm)
+                    row:SetHeight(ITEM_H)
+                    row:SetPoint("TOPLEFT", sm, "TOPLEFT", 1, -4 - (i - 1) * ITEM_H)
+                    row:SetPoint("TOPRIGHT", sm, "TOPRIGHT", -1, -4 - (i - 1) * ITEM_H)
+                    row:SetFrameLevel(sm:GetFrameLevel() + 2)
+                    local lbl = row:CreateFontString(nil, "OVERLAY")
+                    lbl:SetFont(FONT_PATH, 11, GetCDMOptOutline())
+                    lbl:SetPoint("LEFT", row, "LEFT", 10, 0)
+                    lbl:SetText(EllesmereUI.L(label))
+                    local arrow = row:CreateTexture(nil, "ARTWORK")
+                    arrow:SetSize(10, 10)
+                    arrow:SetPoint("RIGHT", row, "RIGHT", -8, 0)
+                    arrow:SetTexture(MEDIA .. "icons\\right-arrow.png")
+                    arrow:SetAlpha(0.7)
+                    local val = row:CreateFontString(nil, "OVERLAY")
+                    val:SetFont(FONT_PATH, 10, GetCDMOptOutline())
+                    val:SetPoint("LEFT", lbl, "RIGHT", 8, 0)
+                    val:SetPoint("RIGHT", arrow, "LEFT", -6, 0)
+                    val:SetJustifyH("RIGHT")
+                    val:SetWordWrap(false); val:SetMaxLines(1)
+                    val:SetTextColor(tDimR, tDimG, tDimB, tDimA)
+                    local hl = row:CreateTexture(nil, "ARTWORK")
+                    hl:SetAllPoints(); hl:SetColorTexture(1, 1, 1, 1); hl:SetAlpha(0)
+
+                    local function Get() return cfg[field] or "none" end
+                    -- Accent label while a sound is chosen, like the icon menu's rows.
+                    local function Paint()
+                        local k = cfg[field]
+                        if k and k ~= "none" then
+                            lbl:SetTextColor(ar, ag, ab, 1)
+                        else
+                            lbl:SetTextColor(tDimR, tDimG, tDimB, tDimA)
+                        end
+                        val:SetText(names[Get()] or Get())
+                    end
+                    Paint()
+                    local function Set(v)
+                        cfg[field] = (v ~= "none" and v) or nil
+                        if cfg[field] then
+                            -- Flip the 0-cost gate live and hook the bar frames already
+                            -- out of the pool, so the next edge plays without a reload.
+                            ns._cdmAnyBuffSound = true
+                            if ns.EnsureTBBSoundHooks then ns.EnsureTBBSoundHooks() end
+                        end
+                        Paint()
+                        -- The bar row's speaker button follows (dimmed with no sound).
+                        if anchorRow._sndPaint then anchorRow._sndPaint() end
+                    end
+                    local function ShowFlyout()
+                        hl:SetAlpha(hlA)
+                        for f, fly in pairs(flyouts) do
+                            if f ~= field then fly:Hide() end
+                        end
+                        local fly = flyouts[field]
+                        if not fly then
+                            local values, order = EllesmereUI.BuildSoundDropdownValues(
+                                ns.FOCUSKICK_SOUND_PATHS, names, ns.FOCUSKICK_SOUND_ORDER)
+                            values._menuOpts.anchor = "RIGHT"
+                            -- Match the CDM icon menu's flyouts: the CDM options font at 11 and
+                            -- the speaker atlas in its own colour.
+                            values._menuOpts.labelFont = { FONT_PATH, 11, GetCDMOptOutline() }
+                            values._menuOpts.iconNativeColor = true
+                            local refresh
+                            fly, _, refresh = EllesmereUI.BuildDropdownMenu(row, 200, order, values, Get, Set, val, "regular")
+                            -- BuildDropdownMenu creates it at FULLSCREEN_DIALOG 200, under both menus.
+                            fly:SetFrameStrata(sm:GetFrameStrata())
+                            fly:SetFrameLevel(sm:GetFrameLevel() + 30)
+                            fly._refresh = refresh
+                            flyouts[field] = fly
+                        end
+                        if not fly:IsShown() then
+                            if fly._refresh then fly._refresh() end
+                            fly:Show()
+                        end
+                    end
+                    row:SetScript("OnEnter", ShowFlyout)
+                    row:SetScript("OnClick", ShowFlyout)
+                    row:SetScript("OnLeave", function() hl:SetAlpha(0) end)
+                end
+                MakeSoundRow(1, "Audio on Buff Gain", "buffActiveSoundKey")
+                MakeSoundRow(2, "Audio on Buff Loss", "buffLostSoundKey")
+
+                local function OverAny()
+                    if sm:IsMouseOver() then return true end
+                    for _, fly in pairs(flyouts) do
+                        if fly:IsShown() and fly:IsMouseOver() then return true end
+                    end
+                    return false
+                end
+                sm:SetScript("OnUpdate", function(m)
+                    if (IsMouseButtonDown("LeftButton") or IsMouseButtonDown("RightButton"))
+                       and not OverAny() then
+                        m:Hide()
+                    end
+                end)
+                sm:HookScript("OnHide", function(m)
+                    m:SetScript("OnUpdate", nil)
+                    for _, fly in pairs(flyouts) do fly:Hide() end
+                end)
+                -- The bar menu underneath asks this before dismissing itself on a click.
+                sm._overAny = OverAny
+                ddBtn._tbbSndMenu = sm
+                sm:Show()
+            end
+
             -- Custom dropdown menu: bars organized by group with quick-add actions inside
             -- each, an independent section, and new-group/independent-bar creation at the bottom.
             local ddMenu
             local function BuildDDMenu()
                 if ddMenu then ddMenu:Hide(); ddMenu = nil end
                 local t = ns.GetTrackedBuffBars()
-                local menu = CreateFrame("Frame", nil, UIParent)
+                -- Screen-level overlay: created hidden, tracked once its scripts are set.
+                local menu = CreateFrame("Frame", nil, EllesmereUI.OverlayParent())
+                menu:Hide()
                 menu:SetFrameStrata("FULLSCREEN_DIALOG")
                 menu:SetFrameLevel(300)
                 menu:SetClampedToScreen(true)
@@ -3801,7 +3721,7 @@ initFrame:SetScript("OnEvent", function(self)
                 -- Rows build on an inner frame so tall menus can scroll.
                 local inner = CreateFrame("Frame", nil, menu)
                 -- The options panel can run at a different effective scale than this
-                -- UIParent-level menu; normalize button width into menu space so rows end exactly at the menu's edges.
+                -- screen-level menu; normalize button width into menu space so rows end exactly at the menu's edges.
                 inner:SetWidth(ddBtn:GetWidth() * ddBtn:GetEffectiveScale() / menu:GetEffectiveScale())
                 inner:SetPoint("TOPLEFT")
                 local MENU_MAX_H = 420
@@ -4043,6 +3963,43 @@ initFrame:SetScript("OnEvent", function(self)
                     delBtn:SetAlpha(0.75)
                     iLbl:SetPoint("RIGHT", delBtn, "LEFT", -4, 0)
 
+                    -- Only a bar that can cue gets the sound menu: on a row right-click and
+                    -- on the speaker button, dimmed ("Add Audio Effect") while the bar has
+                    -- no Audio on Buff Gain/Loss sound and full ("Edit Audio Effect") once
+                    -- it has one. The sound menu repaints it through item._sndPaint.
+                    local soundable = BarTakesSound(b)
+                    if soundable then
+                        local sndBtn = CreateFrame("Button", nil, item)
+                        sndBtn:SetSize(ICON_SZ, ICON_SZ)
+                        sndBtn:SetPoint("RIGHT", delBtn, "LEFT", -6, 0)
+                        sndBtn:SetFrameLevel(item:GetFrameLevel() + 2)
+                        local sndIcon = sndBtn:CreateTexture(nil, "OVERLAY")
+                        sndIcon:SetAllPoints()
+                        sndIcon:SetAtlas("common-icon-sound")
+                        local function HasSound()
+                            local g, l = b.buffActiveSoundKey, b.buffLostSoundKey
+                            return (g and g ~= "none") or (l and l ~= "none")
+                        end
+                        local function RestAlpha() return HasSound() and 0.8 or 0.3 end
+                        item._sndPaint = function()
+                            if not sndBtn:IsMouseOver() then sndBtn:SetAlpha(RestAlpha()) end
+                        end
+                        sndBtn:SetAlpha(RestAlpha())
+                        sndBtn:SetScript("OnEnter", function(self)
+                            self:SetAlpha(1); iLbl:SetTextColor(1,1,1,1); iHl:SetAlpha(hlA)
+                            EllesmereUI.ShowWidgetTooltip(self, HasSound() and EllesmereUI.L("Edit Audio Effect") or EllesmereUI.L("Add Audio Effect"))
+                        end)
+                        sndBtn:SetScript("OnLeave", function(self)
+                            EllesmereUI.HideWidgetTooltip()
+                            self:SetAlpha(RestAlpha())
+                            if item:IsMouseOver() then return end
+                            iLbl:SetTextColor(tDimR,tDimG,tDimB,tDimA); iHl:SetAlpha(idx == _tbbSelectedBar and selA or 0)
+                        end)
+                        -- The bar menu stays open underneath, as with the row right-click.
+                        sndBtn:SetScript("OnClick", function() OpenBarSoundMenu(idx, item) end)
+                        iLbl:SetPoint("RIGHT", sndBtn, "LEFT", -4, 0)
+                    end
+
                     delBtn:SetScript("OnEnter", function() delBtn:SetAlpha(1); iLbl:SetTextColor(1,1,1,1); iHl:SetAlpha(hlA) end)
                     delBtn:SetScript("OnLeave", function()
                         if item:IsMouseOver() then return end
@@ -4063,7 +4020,14 @@ initFrame:SetScript("OnEvent", function(self)
 
                     item:SetScript("OnEnter", function() iLbl:SetTextColor(1,1,1,1); iHl:SetAlpha(hlA); delBtn:SetAlpha(1) end)
                     item:SetScript("OnLeave", function() iLbl:SetTextColor(tDimR,tDimG,tDimB,tDimA); iHl:SetAlpha(idx == _tbbSelectedBar and selA or 0); delBtn:SetAlpha(0.75) end)
-                    item:SetScript("OnClick", function()
+                    item:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+                    item:SetScript("OnClick", function(_, mouseButton)
+                        if mouseButton == "RightButton" then
+                            if not soundable then return end
+                            -- The bar menu stays open underneath, like the CDM icon menu.
+                            OpenBarSoundMenu(idx, item)
+                            return
+                        end
                         menu:Hide()
                         if unassigned then
                             -- No buff yet: go straight to the buff picker.
@@ -4213,6 +4177,20 @@ initFrame:SetScript("OnEvent", function(self)
                     dragHint:SetText(EllesmereUI.L("Drag a bar to move it into another group"))
                     mH = mH + 20
                 end
+                -- Discoverability for the row right-click (Audio on Buff Gain/Loss): shown
+                -- while any bar can take a sound.
+                local anySoundable = false
+                for _, b in ipairs(t.bars) do
+                    if BarTakesSound(b) then anySoundable = true; break end
+                end
+                if anySoundable then
+                    local soundHint = inner:CreateFontString(nil, "OVERLAY")
+                    soundHint:SetFont(FONT_PATH, 10, GetCDMOptOutline())
+                    soundHint:SetTextColor(1, 1, 1, 0.35)
+                    soundHint:SetPoint("TOP", inner, "TOP", 0, -mH - 4)
+                    soundHint:SetText(EllesmereUI.L("Right-click a bar to set its sounds"))
+                    mH = mH + 20
+                end
 
                 local totalH = mH + 4
                 inner:SetHeight(totalH)
@@ -4235,11 +4213,19 @@ initFrame:SetScript("OnEvent", function(self)
                 menu:SetScript("OnUpdate", function(m)
                     -- Never dismiss mid-drag: dragging naturally leaves the menu bounds with the button held down.
                     if m._dragActive then return end
+                    -- A click in the row's sound menu or its flyouts is not a click outside.
+                    local snd = ddBtn._tbbSndMenu
+                    if snd and snd:IsShown() and snd._overAny and snd._overAny() then return end
                     if not m:IsMouseOver() and not ddBtn:IsMouseOver() and IsMouseButtonDown("LeftButton") then
                         m:Hide()
                     end
                 end)
-                menu:HookScript("OnHide", function(m) m:SetScript("OnUpdate", nil) end)
+                menu:HookScript("OnHide", function(m)
+                    m:SetScript("OnUpdate", nil)
+                    if ddBtn._tbbSndMenu then ddBtn._tbbSndMenu:Hide() end
+                end)
+                -- A no-op unless the menu sits on the controller-cursor overlay layer.
+                EllesmereUI.TrackOverlay(menu)
                 menu:Show()
                 ddMenu = menu
             end
@@ -4256,7 +4242,10 @@ initFrame:SetScript("OnEvent", function(self)
                 end
                 if ddMenu and ddMenu:IsShown() then ddMenu:Hide() else BuildDDMenu() end
             end)
-            ddBtn:HookScript("OnHide", function() if ddMenu then ddMenu:Hide() end end)
+            ddBtn:HookScript("OnHide", function()
+                if ddMenu then ddMenu:Hide() end
+                if ddBtn._tbbSndMenu then ddBtn._tbbSndMenu:Hide() end
+            end)
 
             -- Keep the label current when settings refresh in place (e.g. a group rename commits without a full page rebuild).
             EllesmereUI.RegisterWidgetRefresh(UpdateDDLabel)
@@ -4279,6 +4268,8 @@ initFrame:SetScript("OnEvent", function(self)
             local _selForBroadcast = (not _tbbSelectedGroup) and SelectedTBB() or nil
             local _canBroadcast = ns.IsTrackedBuffBarBroadcastable
                 and ns.IsTrackedBuffBarBroadcastable(_selForBroadcast) or false
+            -- WoW Forever: the class runs on one spec, so there is nowhere to copy to.
+            if EllesmereUI.IS_FOREVER then _canBroadcast = false end
             local _isBroadcast = _canBroadcast
                 and ns.IsTrackedBuffBarBroadcast
                 and ns.IsTrackedBuffBarBroadcast(_selForBroadcast) or false
@@ -4415,9 +4406,11 @@ initFrame:SetScript("OnEvent", function(self)
                         })
                     end
                 end,
-                (not _canBroadcast) and (_tbbSelectedGroup
+                (not _canBroadcast) and ((EllesmereUI.IS_FOREVER
+                    and "WoW Forever has no other specs to copy this bar to")
+                    or (_tbbSelectedGroup
                     and "Select a bar to broadcast it to other specs"
-                    or "Only preset or custom buff bars can be added to all specs") or nil)
+                    or "Only preset or custom buff bars can be added to all specs")) or nil)
             y = y - CARD_H - 12
 
             -- Preset Style panel (styled like Profiles & Presets "Active Profile"): pick a
@@ -6046,8 +6039,7 @@ initFrame:SetScript("OnEvent", function(self)
             -- Shared glow controls over the bar's pandemic keys (the Glows page's
             -- Tracked Buff Bar descriptor, resolving the selected bar).
             local GO = EllesmereUI.GlowOptions
-            local tbbDesc = GO and ns.GLOW_VIEW and ns._CDM_TbbGlowDesc
-                and ns._CDM_TbbGlowDesc(SelectedTBB, function() RefreshTBB() end)
+            local tbbDesc = ns._CDM_TbbGlowDesc(SelectedTBB, function() RefreshTBB() end)
 
             local bd0 = SelectedTBB()
             local rightSlot
@@ -6064,10 +6056,9 @@ initFrame:SetScript("OnEvent", function(self)
             end
 
             local tbbPanRow
-            local tbbSpec = tbbDesc and GO.DropdownSpec(tbbDesc, "Pandemic Glow",
-                "Show a glow on the bar when the remaining duration is in the pandemic window (last 30%)")
-            tbbPanRow, h = W:DualRow(parent, y, tbbSpec or { type = "label", text = "" }, rightSlot);  y = y - h
-            if tbbDesc then GO.AttachInline(tbbPanRow._leftRegion, tbbDesc) end
+            tbbPanRow, h = W:DualRow(parent, y, GO.DropdownSpec(tbbDesc, "Pandemic Glow",
+                "Show a glow on the bar when the remaining duration is in the pandemic window (last 30%)"), rightSlot);  y = y - h
+            GO.AttachInline(tbbPanRow._leftRegion, tbbDesc)
 
             -- Apply All
             if EllesmereUI.BuildSyncIcon and EllesmereUI.ApplyPandemicGlowToAll then
@@ -7665,7 +7656,10 @@ initFrame:SetScript("OnEvent", function(self)
 
         -- Preset buffs (potions, consumables, Bloodlust, etc.) added as cast-timer
         -- custom buffs via AddPresetToBar; the buff phase injects an own-frame so
-        -- they render alongside Blizzard-tracked buffs.
+        -- they render alongside Blizzard-tracked buffs. The row count also gates
+        -- the two dividers below, so an empty preset list (WoW Forever) never
+        -- leaves two dividers back to back.
+        local nPresetRows = 0
         do
             local _, _pClass = UnitClass("player")
             for _, preset in ipairs(ns.BUFF_BAR_PRESETS or {}) do
@@ -7713,11 +7707,13 @@ initFrame:SetScript("OnEvent", function(self)
                         end)
                     end
                     mH = mH + ITEM_H
+                    nPresetRows = nPresetRows + 1
                 end
             end
 
-            -- Divider between presets and the Blizzard-tracked buff list
-            if #knownSpells > 0 then
+            -- Divider between presets and the Blizzard-tracked buff list (none when
+            -- no preset row was built: the Custom Spell ID divider already sits there).
+            if #knownSpells > 0 and nPresetRows > 0 then
                 local pDiv = inner:CreateTexture(nil, "ARTWORK")
                 pDiv:SetHeight(1); pDiv:SetColorTexture(1, 1, 1, 0.10)
                 pDiv:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH - 4)
@@ -7751,12 +7747,16 @@ initFrame:SetScript("OnEvent", function(self)
 
         -- "Missing Spells?" footer: centered, accent-colored prompt that opens
         -- Blizzard's CDM and closes EUI options, matching the CD/utility picker.
+        -- Its divider is skipped when no row sits above it: the Custom Spell ID
+        -- divider already separates the footer then.
         do
-            local fDiv = inner:CreateTexture(nil, "ARTWORK")
-            fDiv:SetHeight(1); fDiv:SetColorTexture(1, 1, 1, 0.10)
-            fDiv:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH - 4)
-            fDiv:SetPoint("TOPRIGHT", inner, "TOPRIGHT", -1, -mH - 4)
-            mH = mH + 9
+            if nPresetRows > 0 or #knownSpells > 0 then
+                local fDiv = inner:CreateTexture(nil, "ARTWORK")
+                fDiv:SetHeight(1); fDiv:SetColorTexture(1, 1, 1, 0.10)
+                fDiv:SetPoint("TOPLEFT", inner, "TOPLEFT", 1, -mH - 4)
+                fDiv:SetPoint("TOPRIGHT", inner, "TOPRIGHT", -1, -mH - 4)
+                mH = mH + 9
+            end
 
             local FOOTER_H = 38
             local mbItem = CreateFrame("Button", nil, inner)
@@ -12292,6 +12292,8 @@ initFrame:SetScript("OnEvent", function(self)
                                     confirmText   = "Remove",
                                     specs         = specs,
                                     disabledSpecs = disabled,
+                                    foreverAllKeys   = true,
+                                    foreverActiveKey = curKey,
                                     onConfirm     = function(selectedSpecs)
                                         if ns.RemoveCustomSpellFromSpecs then
                                             ns.RemoveCustomSpellFromSpecs(spellID, selectedSpecs)
@@ -12307,6 +12309,7 @@ initFrame:SetScript("OnEvent", function(self)
                                     confirmText   = "Copy",
                                     specs         = specs,
                                     disabledSpecs = disabled,
+                                    foreverActiveKey = curKey,
                                     onConfirm     = function(selectedSpecs)
                                         if ns.CopyCustomSpellToSpecs then
                                             ns.CopyCustomSpellToSpecs(barKey, spellID, selectedSpecs)
@@ -13379,8 +13382,9 @@ initFrame:SetScript("OnEvent", function(self)
             mH = mH + 9
         end
 
-        -- Presets (Heroism, potions, etc.) -- flat list in custom buff bar picker
-        if isCustomBuff then
+        -- Presets (Heroism, potions, etc.) -- flat list in custom buff bar picker.
+        -- Skipped with its divider when the list is empty (WoW Forever has none).
+        if isCustomBuff and #ns.BUFF_BAR_PRESETS > 0 then
             -- Divider before presets
             local psDiv = inner:CreateTexture(nil, "ARTWORK")
             psDiv:SetHeight(1)
@@ -14245,7 +14249,9 @@ initFrame:SetScript("OnEvent", function(self)
             -- Text overlay (renders above border)
             local pvTextOvr = CreateFrame("Frame", nil, slot)
             pvTextOvr:SetAllPoints(slot)
-            pvTextOvr:SetFrameLevel(slot:GetFrameLevel() + 3)
+            -- +5: the keybind badge sits two levels under this overlay (+3/+4),
+            -- above the slot border (+1) and the hosted-buff marker (+2).
+            pvTextOvr:SetFrameLevel(slot:GetFrameLevel() + 5)
             pvTextOvr:EnableMouse(false)
             slot._pvTextOverlay = pvTextOvr
 
@@ -15039,6 +15045,52 @@ initFrame:SetScript("OnEvent", function(self)
                     end
                 end
             end
+            -- WoW Forever: a stored spell this client cannot see (not known
+            -- and not listed anywhere in its Cooldown Manager catalogue: a
+            -- retail-only spell a retail layout carried in) keeps its place in
+            -- the store but gets no preview slot. The display groups map every
+            -- remaining slot back onto its assignedSpells index (drag, remove
+            -- and the per-icon menu read them). Same exemptions as the
+            -- unlearned test above; the catalogue set is built only once a
+            -- candidate shows up.
+            if EllesmereUI.IS_FOREVER and bd.key ~= "buffs" and not isBuffBar
+               and not isCustomBuffBar and not isFocusKick then
+                local sdFv = ns.GetBarSpellData(bd.key)
+                local customFv  = sdFv and sdFv.customSpellIDs
+                local cdursFv   = sdFv and sdFv.customSpellDurations
+                local sdursFv   = sdFv and sdFv.spellDurations
+                local groupsFv  = sdFv and sdFv.customSpellGroups
+                local racialsFv = ns._myRacialsSet
+                local known = C_SpellBook.IsSpellKnown
+                local listedFv, keptFv, dispFv
+                for i = 1, #tracked do
+                    local id = tracked[i]
+                    local unseen = false
+                    if type(id) == "number" and id > 0
+                       and not (customFv and customFv[id])
+                       and not (racialsFv and racialsFv[id])
+                       and not (cdursFv and cdursFv[id])
+                       and not (sdursFv and sdursFv[id])
+                       and not (groupsFv and groupsFv[id]) then
+                        local base, live = NormalizeToBase(id), ResolveToLive(id)
+                        if not (known(id) or known(base) or known(live)) then
+                            if listedFv == nil then listedFv = ns.CDMForeverListedSet() or false end
+                            unseen = listedFv and not (listedFv[id] or listedFv[base] or listedFv[live]) or false
+                        end
+                    end
+                    if unseen then
+                        if not keptFv then
+                            -- First cut: the kept list starts with the slots before it.
+                            keptFv, dispFv = {}, {}
+                            for j = 1, i - 1 do keptFv[j] = tracked[j]; dispFv[j] = { j } end
+                        end
+                    elseif keptFv then
+                        keptFv[#keptFv + 1] = id
+                        dispFv[#keptFv] = { i }
+                    end
+                end
+                if keptFv then tracked, pf._buffDispGroups = keptFv, dispFv end
+            end
             local count = #tracked
 
             -- Use the same stride logic as the runtime (ComputeTopRowStride).
@@ -15382,12 +15434,8 @@ initFrame:SetScript("OnEvent", function(self)
                     ns.StyleCDMKeybind(slot._keybindText, bd, slot, 1, FONT_PATH)
                     local sid = slot._previewSpellID
                     if bd.showKeybind and sid then
-                        local cache = ns.CDMKeybindCache or ns._cdmKeybindCache
-                        local key = cache and cache[sid]
-                        if not key and C_Spell.GetSpellName then
-                            local n = C_Spell.GetSpellName(sid)
-                            if n and cache then key = cache[n] end
-                        end
+                        -- The live icons' lookup: id, override, base, then name.
+                        local key = ns.ResolveCDMKeybind(sid)
                         if key then
                             slot._keybindText:SetText(key)
                             slot._keybindText:Show()
@@ -15397,7 +15445,8 @@ initFrame:SetScript("OnEvent", function(self)
                     else
                         slot._keybindText:Hide()
                     end
-                    ns.RefreshCDMKeybindBadge(slot._keybindText, bd)
+                    -- StyleCDMKeybind above already styled the badge: visibility only.
+                    ns.ShowCDMKeybindBadge(slot._keybindText, bd)
                 end
 
                 if i <= count then
@@ -15582,28 +15631,34 @@ initFrame:SetScript("OnEvent", function(self)
         return wrapper:GetHeight()
     end
 
-    local function BuildKeybindStyleControls(kbRow, BD, RefreshKeybindStyle)
+    -- Keybind color swatch and text cog on a Show Keybind row. lockTip
+    -- (optional): why the whole row is locked, nil while it is live; the
+    -- swatch and cog give that reason first, then Show Keybind.
+    local function BuildKeybindStyleControls(kbRow, BD, RefreshKeybindStyle, lockTip)
         if not EllesmereUI._prebuilding then
             local rgn = kbRow._rightRegion
-            local ctrl = rgn and rgn._control
             local kbFonts, kbFontOrder = EllesmereUI.BuildFontDropdownData()
             kbFonts.__global = { text = "CDM Font" }
-
-            local kbSwatch, updateKbSwatch
-            if ctrl and EllesmereUI.BuildColorSwatch then
-                kbSwatch, updateKbSwatch = EllesmereUI.BuildColorSwatch(
-                    rgn, kbRow:GetFrameLevel() + 3,
-                    function() return BD().keybindR or 1, BD().keybindG or 1, BD().keybindB or 1, BD().keybindA or 0.9 end,
-                    function(r, g, b, a)
-                        BD().keybindR = r; BD().keybindG = g; BD().keybindB = b; BD().keybindA = a
-                        RefreshKeybindStyle()
-                    end,
-                    true, 20)
-                PP.Point(kbSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
+            local function OffTip()
+                local tip = lockTip and lockTip()
+                if tip then return tip end
+                if BD().showKeybind ~= true then return "Show Keybind" end
             end
+
+            local kbSwatch, updateKbSwatch = EllesmereUI.BuildColorSwatch(
+                rgn, kbRow:GetFrameLevel() + 3,
+                function() return BD().keybindR or 1, BD().keybindG or 1, BD().keybindB or 1, BD().keybindA or 0.9 end,
+                function(r, g, b, a)
+                    BD().keybindR = r; BD().keybindG = g; BD().keybindB = b; BD().keybindA = a
+                    RefreshKeybindStyle()
+                end,
+                true, 20)
+            PP.Point(kbSwatch, "RIGHT", rgn._control, "LEFT", -8, 0)
 
             EllesmereUI.BuildInlineCog(rgn, { anchorTo = kbSwatch, icon = EllesmereUI.RESIZE_ICON,
                 title = "Keybind Text Settings",
+                disabled = function() return OffTip() ~= nil end,
+                disabledTooltip = OffTip,
                 rows = {
                     { type = "dropdown", label = "Font", values = kbFonts, order = kbFontOrder,
                       get = function() return BD().keybindFont or "__global" end,
@@ -15671,22 +15726,23 @@ initFrame:SetScript("OnEvent", function(self)
                 },
             })
 
-            if kbSwatch then
-                local swatchBlock = CreateFrame("Frame", nil, kbSwatch)
-                swatchBlock:SetAllPoints()
-                swatchBlock:SetFrameLevel(kbSwatch:GetFrameLevel() + 10)
-                swatchBlock:EnableMouse(true)
-                swatchBlock:SetScript("OnEnter", function()
-                    EllesmereUI.ShowWidgetTooltip(kbSwatch, EllesmereUI.DisabledTooltip("Show Keybind"))
-                end)
-                swatchBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-                EllesmereUI.RegisterWidgetRefresh(function()
-                    if updateKbSwatch then updateKbSwatch() end
-                    local on = BD().showKeybind == true
-                    kbSwatch:SetAlpha(on and 1 or 0.3)
-                    if on then swatchBlock:Hide() else swatchBlock:Show() end
-                end)
+            local swatchBlock = CreateFrame("Frame", nil, kbSwatch)
+            swatchBlock:SetAllPoints()
+            swatchBlock:SetFrameLevel(kbSwatch:GetFrameLevel() + 10)
+            swatchBlock:EnableMouse(true)
+            swatchBlock:SetScript("OnEnter", function()
+                local tip = OffTip()
+                if tip then EllesmereUI.ShowWidgetTooltip(kbSwatch, EllesmereUI.DisabledTooltip(tip)) end
+            end)
+            swatchBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+            local function SwatchState()
+                updateKbSwatch()
+                local on = OffTip() == nil
+                kbSwatch:SetAlpha(on and 1 or 0.3)
+                swatchBlock:SetShown(not on)
             end
+            EllesmereUI.RegisterWidgetRefresh(SwatchState)
+            SwatchState()
         end
     end
 
@@ -15863,9 +15919,24 @@ initFrame:SetScript("OnEvent", function(self)
             local curKey = ns.GetActiveSpecKey and ns.GetActiveSpecKey()
             ShowRPTSourcePicker(curKey, function(sourceKey)
                 local srcName = sourceKey
-                if GetSpecializationInfoByID and tonumber(sourceKey) then
-                    local _, n = GetSpecializationInfoByID(tonumber(sourceKey))
+                local srcID = tonumber(sourceKey)
+                if srcID then
+                    -- WoW Forever has no by-ID spec global; its spec-ID name
+                    -- lookups name the source there instead of the raw key.
+                    local n
+                    if GetSpecializationInfoByID then
+                        n = select(2, GetSpecializationInfoByID(srcID))
+                    elseif GetSpecializationNameForSpecID then
+                        n = GetSpecializationNameForSpecID(srcID)
+                    elseif GetSpecializationInfoForSpecID then
+                        n = select(2, GetSpecializationInfoForSpecID(srcID))
+                    end
                     if n and n ~= "" then srcName = n end
+                end
+                -- WoW Forever: a key names a whole class there.
+                if EllesmereUI.IS_FOREVER then
+                    local t = EllesmereUI.SpecClassOf(tonumber(sourceKey))
+                    if t then srcName = EllesmereUI.ForeverClassName(t) end
                 end
                 local specs = ns.GetCDMSpecInfo and ns.GetCDMSpecInfo() or {}
                 for _, s in ipairs(specs) do
@@ -15881,6 +15952,7 @@ initFrame:SetScript("OnEvent", function(self)
                     confirmText = "Sync",
                     specs       = specs,
                     lockedSpecs = { [sourceKey] = "This is the spec you're syncing from -- it's always included." },
+                    foreverActiveKey = curKey,
                     onConfirm   = function(selectedSpecs)
                         selectedSpecs[sourceKey] = true
                         local cnt = 0
@@ -15927,6 +15999,7 @@ initFrame:SetScript("OnEvent", function(self)
                 subtitle    = "Uncheck a spec to remove it from the sync. Removed specs keep their current trinkets, pots, racials & buff presets.",
                 confirmText = "Save",
                 specs       = specs,
+                foreverActiveKey = EllesmereUI.IS_FOREVER and ns.GetActiveSpecKey and ns.GetActiveSpecKey() or nil,
                 onConfirm   = function(selectedSpecs)
                     local cnt = 0
                     for _, v in pairs(selectedSpecs) do if v then cnt = cnt + 1 end end
@@ -17498,18 +17571,6 @@ initFrame:SetScript("OnEvent", function(self)
         local BORDER_ORDER  = { "none", "thin", "normal", "heavy", "strong" }
         local BORDER_SIZES  = { none=0, thin=1, normal=2, heavy=3, strong=4 }
 
-        -- Buff Glow dropdown values (buff bars only)
-        local BUFF_GLOW_VALUES = { [0] = "None" }
-        local BUFF_GLOW_ORDER = { 0 }
-        do
-            for _, i in ipairs(ns.GLOW_VIEW.ordered) do local entry = ns.GLOW_STYLES[i]
-                if not entry.shapeGlow then
-                    BUFF_GLOW_VALUES[i] = entry.name
-                    BUFF_GLOW_ORDER[#BUFF_GLOW_ORDER + 1] = i
-                end
-            end
-        end
-
         local isBuffGlowBar = isBuffBar or (barData.barType == "custom_buff")
         local scaleAnimRow
         if isBuffGlowBar then
@@ -17576,21 +17637,18 @@ initFrame:SetScript("OnEvent", function(self)
                 })
             end
 
-            -- Row 2: Buff Glow + swatches | Icon Spacing
+            -- Row 2: Buff Glow + swatches | Icon Spacing. The Glows page's Buff Glow
+            -- descriptor over this bar: a custom icon shape locks it (shown as None),
+            -- and its Pixel Glow parameters keep their own row below (per-icon Buff
+            -- Glows read them too), so this row takes the swatches only.
+            local GO = EllesmereUI.GlowOptions
+            local buffGlowDesc = ns._CDM_BuffGlowDesc(BD, function() ns.BuildAllCDMBars(); Refresh() end)
+            buffGlowDesc.caps = { mode = true }
+            buffGlowDesc.isOff, buffGlowDesc.disabled = IsCustomShape, IsCustomShape
+            buffGlowDesc.disabledTooltip = "This option requires a non-custom button shape"
             local buffGlowRow
             buffGlowRow, h = W:DualRow(parent, y,
-                { type="dropdown", text="Buff Glow",
-                  values=BUFF_GLOW_VALUES, order=BUFF_GLOW_ORDER,
-                  disabled=function() return IsCustomShape() end,
-                  disabledTooltip="This option requires a non-custom button shape",
-                  getValue=function()
-                      if IsCustomShape() then return 0 end
-                      return BD().buffGlowType or 0
-                  end,
-                  setValue=function(v)
-                      BD().buffGlowType = v; ns.BuildAllCDMBars(); Refresh()
-                      C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
-                  end },
+                GO.DropdownSpec(buffGlowDesc, "Buff Glow"),
                 { type="slider", pixel=true, text="Icon Spacing",
                   min=-10, max=20, step=1,
                   getValue=function() return BD().spacing or 2 end,
@@ -17604,44 +17662,7 @@ initFrame:SetScript("OnEvent", function(self)
                       bd._matchStrideH = nil
                       ns.BuildAllCDMBars(); Refresh(); UpdateCDMPreviewAndResize()
                   end });  y = y - h
-
-            -- Inline buff glow color swatches (left of row 2)
-            if not EllesmereUI._prebuilding then
-                local leftRgn = buffGlowRow._leftRegion
-                local ctrl = leftRgn._control
-
-                local noGlow = function()
-                    local gt = BD().buffGlowType or 0
-                    return gt == 0 or IsCustomShape()
-                end
-                local glowSwatch, defaultSwatch, classSwatch = EllesmereUI.BuildTrioColorSwatch(
-                    leftRgn, buffGlowRow:GetFrameLevel() + 3,
-                    {
-                        getMode = function() return BD().buffGlowMode or "default" end,
-                        setMode = function(m) BD().buffGlowMode = m; ns.BuildAllCDMBars() end,
-                        getCustomRGB = function() return BD().buffGlowR or 1.0, BD().buffGlowG or 0.788, BD().buffGlowB or 0.137 end,
-                        setCustomRGB = function(r, g, b)
-                            BD().buffGlowR = r; BD().buffGlowG = g; BD().buffGlowB = b
-                        end,
-                        hasClassColor = true,
-                        onChange = function() Refresh(); EllesmereUI:RefreshPage() end,
-                        disabled = noGlow,
-                        overrideSize = 20,
-                    })
-                PP.Point(classSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
-                PP.Point(glowSwatch, "RIGHT", classSwatch, "LEFT", -8, 0)
-                PP.Point(defaultSwatch, "RIGHT", glowSwatch, "LEFT", -8, 0)
-
-                -- No glow selected (or custom shape): allow swapping boxes but do not open the color picker
-                local origGlowClick = glowSwatch:GetScript("OnClick")
-                glowSwatch:SetScript("OnClick", function(self, ...)
-                    if noGlow() then return end
-                    if origGlowClick then origGlowClick(self, ...) end
-                end)
-
-                -- Anchor for the inline pixel-glow cog (placed left of the swatches).
-                leftRgn._lastInline = defaultSwatch
-            end
+            GO.AttachInline(buffGlowRow._leftRegion, buffGlowDesc)
 
             -- (Pixel Glow Thickness / Lines / Speed moved to a dedicated row at the
             -- bottom of this section -- see "Pixel Glow Thickness (buff bars)" below.
@@ -18924,141 +18945,71 @@ initFrame:SetScript("OnEvent", function(self)
         end)
         end -- if isAnyBuffBar (tooltip only) / else (tooltip + keybind)
 
-        -- Pandemic Glow
+        -- Pandemic Glow: the Glows page's descriptor over this bar, with the
+        -- preview and the Pixel Glow cog inline and the swatches in the right half.
         do
-            local function pandemicOff() return BD().pandemicGlow ~= true end
-            local function antsOff()
-                if pandemicOff() then return true end
-                local raw = BD().pandemicGlowStyle
-                return type(raw) ~= "number" or raw ~= 1
-            end
-
+            local GO = EllesmereUI.GlowOptions
+            local panDesc = ns._CDM_PandemicGlowDesc(BD, function() ns.BuildAllCDMBars(); Refresh() end)
             local panGlowRow
             panGlowRow, h = W:DualRow(parent, y,
-                { type="dropdown", text="Pandemic Glow",
-                  values=PAN_GLOW_VALUES, order=PAN_GLOW_ORDER,
-                  getValue=function()
-                      -- nil means NEVER CONFIGURED, which renders as Blizzard Default
-                      -- (-1), not None (0). The three built-in bars never seed
-                      -- pandemicGlow, while every template that does seed it ships true
-                      -- + style -1 (custom bars EllesmereUICdmSpellPicker.lua, tracking
-                      -- bars EllesmereUICdmBuffBars.lua). Reporting nil as None would
-                      -- claim the glow is off while Blizzard's PandemicIcon still draws
-                      -- -- and since the dropdown already shows the wanted value,
-                      -- picking it fires no change, leaving no way to turn the glow
-                      -- off. Only an explicit false is None.
-                      local pg = BD().pandemicGlow
-                      if pg == false then return 0 end
-                      if pg == nil then return -1 end
-                      local raw = BD().pandemicGlowStyle
-                      if type(raw) ~= "number" then return 1 end
-                      return raw
-                  end,
-                  setValue=function(v)
-                      if v == 0 then BD().pandemicGlow = false
-                      else BD().pandemicGlow = true; BD().pandemicGlowStyle = v end
-                      ns.BuildAllCDMBars(); Refresh()
-                      if panGlowRow and panGlowRow._refreshPreview then panGlowRow._refreshPreview() end
-                      C_Timer.After(0, function() EllesmereUI:RefreshPage() end)
-                  end,
-                  tooltip="Show a glow on icons when the remaining duration is in the pandemic window (last 30%)" },
+                GO.DropdownSpec(panDesc, "Pandemic Glow",
+                    "Show a glow on icons when the remaining duration is in the pandemic window (last 30%)"),
                 { type="label", text="Pandemic Glow Color" });  y = y - h
 
             if not EllesmereUI._prebuilding then
-            local leftRgn = panGlowRow._leftRegion
-            local previewIcon = BuildPandemicPreview(panGlowRow, pandemicOff, BD, leftRgn)
-            leftRgn._lastInline = previewIcon
+                local leftRgn = panGlowRow._leftRegion
+                leftRgn._lastInline = GO.BuildPreview(leftRgn, panDesc, { anchor = leftRgn._control, x = -8 })
+                GO.AttachInline(leftRgn, panDesc, panGlowRow._rightRegion)
 
-            EllesmereUI.BuildInlineCog(leftRgn, {
-                anchorTo = leftRgn._lastInline or leftRgn._control, chain = false, gap = 9,
-                show = function(btn) ShowPandemicPixelGlowPopup(btn, BD, function() ns.BuildAllCDMBars() end) end,
-                isOpen = PgPopupOpenFor,
-                disabled = antsOff,
-                disabledTooltip = "This option requires Pixel Glow to be the selected glow type",
-            })
-
-            do
-                local rightRgn = panGlowRow._rightRegion
-                if rightRgn and EllesmereUI.BuildTrioColorSwatch then
-                    local swatch, defaultSwatch, classSwatch = EllesmereUI.BuildTrioColorSwatch(
-                        rightRgn, panGlowRow:GetFrameLevel() + 3,
-                        {
-                            getMode = function() return BD().pandemicGlowMode or "default" end,
-                            setMode = function(m)
-                                BD().pandemicGlowMode = m
-                                ns.BuildAllCDMBars(); Refresh()
-                                if panGlowRow._refreshPreview then panGlowRow._refreshPreview() end
-                            end,
-                            getCustomRGB = function()
-                                local c = BD().pandemicGlowColor
-                                return (c and c.r) or 1, (c and c.g) or 1, (c and c.b) or 0
-                            end,
-                            setCustomRGB = function(r, g, b)
-                                BD().pandemicGlowColor = { r = r, g = g, b = b }
-                                ns.BuildAllCDMBars(); Refresh()
-                                if panGlowRow._refreshPreview then panGlowRow._refreshPreview() end
-                            end,
-                            hasClassColor = true,
-                            onChange = function() EllesmereUI:RefreshPage() end,
-                            disabled = pandemicOff,
-                            disabledAlpha = 0.15,
-                        })
-                    PP.Point(classSwatch, "RIGHT", rightRgn, "RIGHT", -20, 0)
-                    PP.Point(swatch, "RIGHT", classSwatch, "LEFT", -8, 0)
-                    PP.Point(defaultSwatch, "RIGHT", swatch, "LEFT", -8, 0)
-
-                    local function UpdatePanSwatchMouse()
-                        local off = pandemicOff()
-                        swatch:EnableMouse(not off)
-                        defaultSwatch:EnableMouse(not off)
-                        classSwatch:EnableMouse(not off)
-                    end
-                    EllesmereUI.RegisterWidgetRefresh(UpdatePanSwatchMouse)
-                    UpdatePanSwatchMouse()
+                if EllesmereUI.BuildSyncIcon and EllesmereUI.ApplyPandemicGlowToAll then
+                    EllesmereUI.BuildSyncIcon({
+                        region = panGlowRow._leftRegion,
+                        tooltip = "Apply this pandemic glow to Nameplates, all CDM bars, and tracking bars. A surface that can't show a style uses its closest match.",
+                        isSynced = function()
+                            return EllesmereUI.IsPandemicGlowSyncedToAll(EllesmereUI.PandemicPayloadFromCdmBar(BD()), { skipCdmKey = barKey })
+                        end,
+                        onClick = function()
+                            EllesmereUI.ApplyPandemicGlowToAll(EllesmereUI.PandemicPayloadFromCdmBar(BD()), { skipCdmKey = barKey })
+                            Refresh()
+                        end,
+                    })
                 end
-            end
-
-            if EllesmereUI.BuildSyncIcon and EllesmereUI.ApplyPandemicGlowToAll then
-                EllesmereUI.BuildSyncIcon({
-                    region = panGlowRow._leftRegion,
-                    tooltip = "Apply this pandemic glow to Nameplates, all CDM bars, and tracking bars. A surface that can't show a style uses its closest match.",
-                    isSynced = function()
-                        return EllesmereUI.IsPandemicGlowSyncedToAll(EllesmereUI.PandemicPayloadFromCdmBar(BD()), { skipCdmKey = barKey })
-                    end,
-                    onClick = function()
-                        EllesmereUI.ApplyPandemicGlowToAll(EllesmereUI.PandemicPayloadFromCdmBar(BD()), { skipCdmKey = barKey })
-                        Refresh()
-                    end,
-                })
-            end
             end
         end
 
-        -- Show Non-On Use Trinkets | Show Rotation Helper
-        _, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Non-On Use Trinkets",
+        -- Show Non-On Use Trinkets | Show Rotation Helper. Forever has no
+        -- Assisted Highlight: there the trinket toggle closes the section
+        -- instead (beside Show Glows Only in Combat, or as the odd last slot).
+        local trinketCfg = { type="toggle", text="Show Non-On Use Trinkets",
               tooltip = "Show equipped trinkets even if they don't have an on-use effect.",
               getValue=function() return BD().showPassiveTrinkets == true end,
               setValue=function(v)
                   BD().showPassiveTrinkets = v
                   if ns.FullCDMRebuild then ns.FullCDMRebuild("trinket_toggle") end
-              end },
+              end }
+        if not EllesmereUI.IS_FOREVER then
+        _, h = W:DualRow(parent, y,
+            trinketCfg,
             { type="toggle", text="Show Rotation Helper",
               tooltip = "Highlight Blizzard's next recommended ability on all CDM bars. Requires Assisted Highlight to be enabled in Blizzard's options. Disabling this hides only the CDM highlight.\n\nPress the normal ability's keybind yourself. This does not cast spells or use the Single-Button Assistant, so it does not add that assistant's global cooldown penalty. Only abilities present on your CDM bars can be highlighted.",
-              disabled=function() return not GetCVarBool("assistedCombatHighlight") end,
+              disabled=function() return not ns.RotationAssistAvailable() end,
               disabledTooltip="This option requires Blizzard's Assisted Highlight to be enabled",
               rawTooltip=true,
               getValue=function()
                   local p = DB()
-                  return p and p.cdmBars and not p.cdmBars.hideRotationHelper and GetCVarBool("assistedCombatHighlight")
+                  return p and p.cdmBars and not p.cdmBars.hideRotationHelper and ns.RotationAssistAvailable()
               end,
               setValue=function(v)
                   local p = DB()
                   if p and p.cdmBars then
                       p.cdmBars.hideRotationHelper = not v
                       if ns.UpdateRotationHighlights then ns.UpdateRotationHighlights() end
+                      -- The Style and Thickness rows below exist only while this
+                      -- is on (the Glows page rebuilds its listing on every return).
+                      EllesmereUI:RefreshPage(true)
                   end
               end });  y = y - h
+        end -- not IS_FOREVER
 
         -- Rotation Assist styling is profile-wide (not tied to the selected
         -- bar). Keeping it on this override-eligible page lets the existing
@@ -19085,6 +19036,9 @@ initFrame:SetScript("OnEvent", function(self)
             return key
         end
 
+        -- Style | Color and Thickness | Outset: built only while the CDM highlight
+        -- can show (Show Rotation Helper on, Blizzard's Assisted Highlight on).
+        if not ns._CDM_RotationHelperOff() then
         local rotStyleRow
         rotStyleRow, h = W:DualRow(parent, y,
             { type="dropdown", text="Rotation Assist Style",
@@ -19237,7 +19191,7 @@ initFrame:SetScript("OnEvent", function(self)
                 local rotThRow
                 rotThRow, h = W:DualRow(parent, y, thicknessCfg, outsetCfg);  y = y - h
                 -- Pixel Glow's remaining parameters (Solid Border reads thickness only).
-                if not EllesmereUI._prebuilding and EllesmereUI.GlowOptions and ns._CDM_RotationGlowDesc then
+                if not EllesmereUI._prebuilding then
                     local function notPixel()
                         local c = RotationBars(); return not c or c.rotationAssistStyle ~= "pixel"
                     end
@@ -19256,9 +19210,10 @@ initFrame:SetScript("OnEvent", function(self)
                     })
                 end
             else
-                _, h = W:DualRow(parent, y, outsetCfg, { type="label", text="" });  y = y - h
+                _, h = W:DualRow(parent, y, outsetCfg, EllesmereUI.BlankRowCfg());  y = y - h
             end
         end
+        end -- not RotationHelperOff
 
         -- Hide Items if Missing | Mirror Key Presses -- CD/utility bars only.
         -- Buff bars host Hide Items if Missing in the tooltip row above (their
@@ -19283,8 +19238,7 @@ initFrame:SetScript("OnEvent", function(self)
         -- unchanged). Cursor-anchored bars keep their deliberate TOOLTIP raise
         -- while riding the cursor; this applies only when not cursor-anchored.
         -- Same values/labels as the Tracking Bars "Bar Strata" dropdown.
-        _, h = W:DualRow(parent, y,
-            { type = "dropdown", text = "Bar Strata",
+        local strataCfg = { type = "dropdown", text = "Bar Strata",
               tooltip = "Screen layer this bar and its icons render on.",
               values = EllesmereUI.FRAME_STRATA_LABELS,
               order = EllesmereUI.FRAME_STRATA_ORDER_FULL,
@@ -19292,7 +19246,12 @@ initFrame:SetScript("OnEvent", function(self)
               setValue = function(v)
                   BD().barStrata = v
                   ns.BuildAllCDMBars(); Refresh()
-              end },
+              end }
+        -- WoW Forever has no combat potion presets, so the swap toggle is not
+        -- built there and Bar Strata opens the glow rows below instead.
+        if not EllesmereUI.IS_FOREVER then
+        _, h = W:DualRow(parent, y,
+            strataCfg,
             -- Profile-wide (one switch covers the Light's Potential, Recklessness
             -- and Liquid Luster presets on every CD/utility bar): a pot preset
             -- whose own family is fully out of bags swaps its icon/count/cooldown
@@ -19311,6 +19270,7 @@ initFrame:SetScript("OnEvent", function(self)
                       if ns.FullCDMRebuild then ns.FullCDMRebuild("pot_swap_toggle") end
                   end
               end });  y = y - h
+        end -- not IS_FOREVER
 
         -- Global, not per-bar: one gate for every glow the Cooldown Manager
         -- draws, hence the label. Same hosting trick as Hide Items if Missing
@@ -19345,18 +19305,29 @@ initFrame:SetScript("OnEvent", function(self)
               end }
 
         -- Cooldown/utility bars only: buff bars have no cooldown edge.
+        -- WoW Forever: Bar Strata takes the first slot here and every later
+        -- toggle moves up one, closing with Show Non-On Use Trinkets.
         if barData.barType == "cooldowns" or barData.barType == "utility" then
-        _, h = W:DualRow(parent, y,
-            { type="toggle", text="Always Show Cooldown Edge",
+        local edgeCfg = { type="toggle", text="Always Show Cooldown Edge",
               tooltip="Show the rotating cooldown edge on every cooldown in this bar, not just while a charge is recharging. Hide Recharge Edge still overrides this for individual charge spells.",
               getValue=function() return BD().showCooldownEdge == true end,
               setValue=function(v)
                   BD().showCooldownEdge = v and true or nil
                   ns.BuildAllCDMBars(); Refresh()
-              end },
-            glowCombatCfg);  y = y - h
+              end }
+        if EllesmereUI.IS_FOREVER then
+            _, h = W:DualRow(parent, y, strataCfg, edgeCfg);  y = y - h
+            _, h = W:DualRow(parent, y, glowCombatCfg, trinketCfg);  y = y - h
         else
-        _, h = W:DualRow(parent, y, glowCombatCfg, { type="label", text="" });  y = y - h
+            _, h = W:DualRow(parent, y, edgeCfg, glowCombatCfg);  y = y - h
+        end
+        else
+        if EllesmereUI.IS_FOREVER then
+            _, h = W:DualRow(parent, y, strataCfg, glowCombatCfg);  y = y - h
+            _, h = W:DualRow(parent, y, trinketCfg, EllesmereUI.BlankRowCfg());  y = y - h
+        else
+            _, h = W:DualRow(parent, y, glowCombatCfg, EllesmereUI.BlankRowCfg());  y = y - h
+        end
         end
 
         end -- custom_buff extras guard
@@ -19417,20 +19388,30 @@ initFrame:SetScript("OnEvent", function(self)
         local W = EllesmereUI.Widgets
         local y = yOffset
         local _, h
+        parent._showRowDivider = true
         local function Settings() return DB().rotationAssistIcon end
         local function Apply()
             ns.RefreshRotationAssistIcon()
             EllesmereUI:RefreshPage()
         end
+        -- Why the icon's rows are locked, nil while they are live: Blizzard's
+        -- Assisted Highlight off, or the icon itself off.
+        local function IconLockTip()
+            if not ns.RotationAssistAvailable() then
+                return "This option requires Blizzard's Assisted Highlight to be enabled"
+            end
+            if Settings().enabled ~= true then return "Show Rotation Assist Icon" end
+        end
+        local function IconOff() return IconLockTip() ~= nil end
+        -- The saved position, else the runtime's default (read only).
         local function Position()
-            local pos = Settings().position
-            if pos then return pos end
-            return { point = "CENTER", relPoint = "CENTER", x = 0, y = -140 }
+            return Settings().position or ns.CDM_ROTATION_ICON_DEFAULT_POS
         end
         local function SetOffset(axis, value)
-            local pos = Position()
+            local s = Settings()
+            local pos = s.position or CopyTable(ns.CDM_ROTATION_ICON_DEFAULT_POS)
             pos[axis] = EllesmereUI.PP.FromPixels(value)
-            Settings().position = pos
+            s.position = pos
             ns.RefreshRotationAssistIcon()
         end
 
@@ -19438,7 +19419,9 @@ initFrame:SetScript("OnEvent", function(self)
         _, h = W:DualRow(parent, y,
             { type="toggle", text="Show Rotation Assist Icon",
               tooltip="Show Blizzard's current recommendation in a separate icon. Requires Assisted Highlight to be enabled in Blizzard's options. Press the spell's normal keybind; this display never casts spells. Blizzard supplies one recommendation, not a queue of future casts.",
-              disabled=function() return not GetCVarBool("assistedCombatHighlight") end,
+              -- Locked only while off: an icon left on after the highlight was
+              -- switched off can always be turned off here.
+              disabled=function() return not ns.RotationAssistAvailable() and Settings().enabled ~= true end,
               disabledTooltip="This option requires Blizzard's Assisted Highlight to be enabled",
               rawTooltip=true,
               getValue=function() return Settings().enabled == true end,
@@ -19447,6 +19430,7 @@ initFrame:SetScript("OnEvent", function(self)
                   Apply()
               end },
             { type="slider", text="Icon Size", min=16, max=128, step=1,
+              disabled=IconOff, disabledTooltip=IconLockTip,
               getValue=function() return Settings().iconSize or 48 end,
               setValue=function(v) Settings().iconSize = v; ns.RefreshRotationAssistIcon() end }
         );  y = y - h
@@ -19454,30 +19438,35 @@ initFrame:SetScript("OnEvent", function(self)
         kbRow, h = W:DualRow(parent, y,
             { type="toggle", text="Only in Combat",
               tooltip="Hide outside combat. Unlock Mode shows a placeholder when no recommendation is available.",
+              disabled=IconOff, disabledTooltip=IconLockTip,
               getValue=function() return Settings().onlyInCombat == true end,
               setValue=function(v) Settings().onlyInCombat = v; Apply() end },
             { type="toggle", text="Show Keybind",
               tooltip="Use the CDM keybind mapping. Configure the font, outline, position, background and border with the cog.",
+              disabled=IconOff, disabledTooltip=IconLockTip,
               getValue=function() return Settings().showKeybind == true end,
               setValue=function(v) Settings().showKeybind = v; Apply() end }
         );  y = y - h
-        BuildKeybindStyleControls(kbRow, Settings, Apply)
+        BuildKeybindStyleControls(kbRow, Settings, Apply, IconLockTip)
         _, h = W:DualRow(parent, y,
             { type="slider", text="X Offset", min=-2000, max=2000, step=1,
               tooltip="Horizontal screen offset. You can also drag the Rotation Assist Icon in Unlock Mode.",
+              disabled=IconOff, disabledTooltip=IconLockTip,
               getValue=function() return EllesmereUI.PP.ToPixels(Position().x or 0) end,
               setValue=function(v) SetOffset("x", v) end },
             { type="slider", text="Y Offset", min=-1200, max=1200, step=1,
               tooltip="Vertical screen offset. You can also drag the Rotation Assist Icon in Unlock Mode.",
+              disabled=IconOff, disabledTooltip=IconLockTip,
               getValue=function() return EllesmereUI.PP.ToPixels(Position().y or 0) end,
               setValue=function(v) SetOffset("y", v) end }
         );  y = y - h
         _, h = W:DualRow(parent, y,
             { type="toggle", text="Show GCD",
               tooltip="Show the global cooldown as a swipe over the recommended ability. The swipe shows when the GCD ends; casting, channeling and ability requirements can still delay your next action.",
+              disabled=IconOff, disabledTooltip=IconLockTip,
               getValue=function() return Settings().showGCD == true end,
               setValue=function(v) Settings().showGCD = v; Apply() end },
-            { type = "label", text = "" }
+            EllesmereUI.BlankRowCfg()
         );  y = y - h
         return math.abs(y)
     end
@@ -19627,7 +19616,10 @@ initFrame:SetScript("OnEvent", function(self)
     EllesmereUI:RegisterModule("EllesmereUICooldownManager", {
         title       = "Cooldown Manager",
         description = "CDM bar customization, action bar glows, and buff bars.",
-        pages       = { PAGE_CDM_BARS, PAGE_ROTATION_ICON, PAGE_BAR_GLOWS, PAGE_BUFF_BARS },
+        -- Rotation Assist Icon: the far-right tab; none on Forever (no Assisted
+        -- Highlight there).
+        pages       = EllesmereUI.IS_FOREVER and { PAGE_CDM_BARS, PAGE_BAR_GLOWS, PAGE_BUFF_BARS }
+                      or { PAGE_CDM_BARS, PAGE_BAR_GLOWS, PAGE_BUFF_BARS, PAGE_ROTATION_ICON },
         disabledPages = {},
         disabledPageTooltips = {},
         buildPage   = function(pageName, parent, yOffset)
@@ -19784,6 +19776,16 @@ initFrame:SetScript("OnEvent", function(self)
                 local specKey = ns.GetActiveSpecKey and ns.GetActiveSpecKey()
                 if sp and specKey and specKey ~= "0" then
                     sp[specKey] = nil
+                    -- WoW Forever: the class reads one of several keys (its
+                    -- Forever spec key, then its retail specs); clear them all
+                    -- so the reload starts the class fresh.
+                    if EllesmereUI.IS_FOREVER then
+                        local token = select(2, UnitClass("player"))
+                        local ids = EllesmereUI.ForeverClassSpecIDs(token)
+                        for i = 1, (ids and #ids or 0) do sp[tostring(ids[i])] = nil end
+                        local lk = EllesmereUI.FOREVER_CLASS_SPEC[token]
+                        if lk then sp[tostring(lk)] = nil end
+                    end
                 end
             end
             -- No reload here: the footer Reset popup (reload = true) reloads after this returns.

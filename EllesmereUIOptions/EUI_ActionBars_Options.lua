@@ -665,7 +665,7 @@ initFrame:SetScript("OnEvent", function(self)
             -- Action Bar 1's chrome (painted after the buttons): WoW Forever's
             -- frame and dividers and the look's end caps (horizontal only),
             -- with room above and below the grid for them.
-            local fvPrev = info.key == "MainBar" and EllesmereUI.BlizzStyle.Forever("actionbars")
+            local fvPrev = info.key == "MainBar" and ns.AB_ForeverBg()
             local capsPrev = info.key == "MainBar" and not isVertical and ns.AB_CapsLook() or nil
             if fvPrev or capsPrev then
                 local reachT, reachB = ns.AB_ChromeReach(scaledBtnW, gridH, fvPrev, capsPrev, gridRows > 1, totalScale)
@@ -1357,6 +1357,9 @@ initFrame:SetScript("OnEvent", function(self)
 
         local orientValues = { HORIZONTAL = "Horizontal", VERTICAL = "Vertical" }
         local orientOrder  = { "HORIZONTAL", "VERTICAL" }
+        -- The data bars this client builds (WoW Forever has no House Favor bar).
+        local DATA_BAR_KEYS = EllesmereUI.IS_FOREVER and { "XPBar", "RepBar" }
+            or { "XPBar", "RepBar", "FavorBar" }
 
         _, h = W:DualRow(parent, y,
             { type="toggle", text="Use Blizzard's XP/Rep Bars",
@@ -1364,7 +1367,7 @@ initFrame:SetScript("OnEvent", function(self)
               setValue=function(v)
                   EAB.db.profile.useBlizzardDataBars = v
                   if v then
-                      for _, k in ipairs({"XPBar", "RepBar", "FavorBar"}) do
+                      for _, k in ipairs(DATA_BAR_KEYS) do
                           local frame = ns.dataBarFrames and ns.dataBarFrames[k]
                           if frame then
                               frame:Hide()
@@ -1378,7 +1381,7 @@ initFrame:SetScript("OnEvent", function(self)
                       end
                   else
                       local anyMissing = false
-                      for _, k in ipairs({"XPBar", "RepBar", "FavorBar"}) do
+                      for _, k in ipairs(DATA_BAR_KEYS) do
                           local frame = ns.dataBarFrames and ns.dataBarFrames[k]
                           if frame then
                               local s = EAB.db.profile.bars[k]
@@ -1407,6 +1410,9 @@ initFrame:SetScript("OnEvent", function(self)
                   return EAB.db.profile.bars["XPBar"] and EAB.db.profile.bars["XPBar"].orientation or "HORIZONTAL"
               end,
               setValue=function(v)
+                  -- Every stored data bar takes the orientation, the House Favor
+                  -- bar included where it is not built, so the three bars keep
+                  -- one shared value in a profile carried to another client.
                   for _, k in ipairs({"XPBar", "RepBar", "FavorBar"}) do
                       if EAB.db.profile.bars[k] then
                           EAB.db.profile.bars[k].orientation = v
@@ -1452,11 +1458,11 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         -- Custom Border (each data-bar section's opt-in). Its two sync links copy
-        -- between the three data bars only. The style link carries the style, its
-        -- offsets, shifts and Show Behind plus the colour a style pick seeds; the
-        -- size link carries the size and the colour. Both turn the target's Custom
-        -- Border on, so a target never holds values it does not draw.
-        local DATA_BAR_KEYS = { "XPBar", "RepBar", "FavorBar" }
+        -- between the built data bars (DATA_BAR_KEYS) only. The style link
+        -- carries the style, its offsets, shifts and Show Behind plus the colour
+        -- a style pick seeds; the size link carries the size and the colour. Both
+        -- turn the target's Custom Border on, so a target never holds values it
+        -- does not draw.
         local DATA_BAR_LABELS = { XPBar = "XP Bar", RepBar = "Reputation Bar", FavorBar = "House Favor Bar" }
         local function DataBarTextured(s)
             local t = s.borderTexture or "solid"
@@ -1877,8 +1883,10 @@ initFrame:SetScript("OnEvent", function(self)
 
         _, h = W:Spacer(parent, y, 12);  y = y - h
         BuildDataBarSection("RepBar", "REPUTATION BAR", "Rep Bar Visibility")
+        if not EllesmereUI.IS_FOREVER then
         _, h = W:Spacer(parent, y, 12);  y = y - h
         BuildDataBarSection("FavorBar", "HOUSE FAVOR BAR", "Favor Bar Visibility")
+        end -- not IS_FOREVER
 
         return math.abs(y)
     end
@@ -2114,7 +2122,11 @@ initFrame:SetScript("OnEvent", function(self)
                       disabled=NeverOnly,
                       disabledTooltip="Visibility set to Never",
                       get=function() return SB().dragShow == true end,
-                      set=function(v) SB().dragShow = v end }
+                      set=function(v)
+                          SB().dragShow = v
+                          -- The Apply Visibility link compares this toggle.
+                          EllesmereUI:RefreshPage()
+                      end }
                 end
                 EllesmereUI.BuildInlineCog(rgn, {
                     title = "Visibility",
@@ -2199,20 +2211,48 @@ initFrame:SetScript("OnEvent", function(self)
             })
         end
 
-        if not visOnly then
-            local ctRow
-            ctRow, h = W:DualRow(parent, y,
-                { type="toggle", text="Click Through",
-                  getValue=function()
-                      return SGet("clickThrough")
-                  end,
-                  setValue=function(v)
-                      SSet("clickThrough", v, function(k) EAB:ApplyClickThroughForBar(k) end)
-                  end },
-                -- Stock looks: Action Bar 1's end caps take the free slot (WoW
-                -- Forever's shown unless hidden, the others opt-in).
-                (SelectedKey() == "MainBar" and EllesmereUI.BlizzStyle.Get("actionbars")) and
-                { type="toggle", text="Show End Caps",
+        -- Action Bar 1's end caps and their size/offset cog. WoW Forever's are
+        -- shown unless hidden and sit atop LAYOUT beside Show Bar Background;
+        -- Blizzard Style and Classic WoW UI opt in with a toggle, the EllesmereUI
+        -- style with an art choice (euiEndCaps, nil = None), both in the Click
+        -- Through row's free slot.
+        local CAPS = (not visOnly and SelectedKey() == "MainBar") and {} or nil
+        if CAPS then
+            CAPS.stock = EllesmereUI.BlizzStyle.Get("actionbars") and true or false
+            CAPS.forever = CAPS.stock and EllesmereUI.BlizzStyle.Forever("actionbars")
+            -- True while the current look draws no end caps (the runtime's own answer).
+            function CAPS.Off()
+                return not ns.AB_CapsLook()
+            end
+            function CAPS.Cfg()
+                if not CAPS.stock then
+                    -- WoW Forever's own art exists only on that client.
+                    local values = { none="None", blizzard="Modern", classic="Classic" }
+                    local order = { "none", "blizzard", "classic" }
+                    if EllesmereUI.IS_FOREVER then
+                        values.forever = "WoW Forever"
+                        order[#order + 1] = "forever"
+                    end
+                    return { type="dropdown", text="End Caps",
+                      tooltip=EllesmereUI.IS_FOREVER
+                          and "Art at the ends of the bar: Modern shows gryphons or wyverns by faction, Classic the vanilla gryphons, WoW Forever this client's own."
+                          or "Art at the ends of the bar: Modern shows gryphons or wyverns by faction, Classic the vanilla gryphons.",
+                      values=values, order=order,
+                      disabled=function() return not EAB:GetOrientationForBar("MainBar") end,
+                      disabledTooltip="Vertical Orientation", requireState="disabled",
+                      getValue=function()
+                          local v = EAB.db.profile.euiEndCaps
+                          if v == "forever" and not EllesmereUI.IS_FOREVER then v = nil end
+                          return v or "none"
+                      end,
+                      setValue=function(v)
+                          EAB.db.profile.euiEndCaps = (v ~= "none") and v or nil
+                          EAB:ApplyPaddingForBar("MainBar")
+                          SUpdatePreviewAndResize()
+                          EllesmereUI:RefreshPage()
+                      end }
+                end
+                return { type="toggle", text="Show End Caps",
                   tooltip=(EllesmereUI.BlizzStyle.Active("actionbars") == "classic")
                       and "Show the gryphons at the ends of the bar."
                       or "Show the gryphons or wyverns at the ends of the bar.",
@@ -2234,27 +2274,25 @@ initFrame:SetScript("OnEvent", function(self)
                       SUpdatePreviewAndResize()
                       EllesmereUI:RefreshPage()
                   end }
-                or EllesmereUI.BlankRowCfg());  y = y - h
-            -- End caps' size and offsets (every stock look; X mirrored).
-            if not EllesmereUI._prebuilding and SelectedKey() == "MainBar" and EllesmereUI.BlizzStyle.Get("actionbars") then
+            end
+            -- End caps' size and offsets (every look; X mirrored).
+            function CAPS.Cog(rgn)
+                if EllesmereUI._prebuilding then return end
                 local function CapsHorizontal() return EAB:GetOrientationForBar("MainBar") end
                 local function CapsSet(k, v)
                     EAB.db.profile[k] = v
                     EAB:ApplyPaddingForBar("MainBar")
                     SUpdatePreviewAndResize()
                 end
-                EllesmereUI.BuildInlineCog(ctRow._rightRegion, {
+                EllesmereUI.BuildInlineCog(rgn, {
                     title = "End Cap Settings",
                     icon = EllesmereUI.RESIZE_ICON,
                     disabled = function()
-                        if not CapsHorizontal() then return true end
-                        local p = EAB.db.profile
-                        if EllesmereUI.BlizzStyle.Forever("actionbars") then return p.foreverHideEndCaps == true end
-                        return p.showEndCaps ~= true
+                        return not CapsHorizontal() or CAPS.Off()
                     end,
                     disabledTooltip = function()
                         if not CapsHorizontal() then return EllesmereUI.DisabledTooltip("Vertical Orientation", "disabled") end
-                        return EllesmereUI.DisabledTooltip("Show End Caps")
+                        return EllesmereUI.DisabledTooltip(CAPS.stock and "Show End Caps" or "End Caps")
                     end,
                     rawTooltip = true,
                     rows = {
@@ -2272,6 +2310,21 @@ initFrame:SetScript("OnEvent", function(self)
                     },
                 })
             end
+        end
+
+        if not visOnly then
+            local ctRow
+            local capsInCt = CAPS and not CAPS.forever
+            ctRow, h = W:DualRow(parent, y,
+                { type="toggle", text="Click Through",
+                  getValue=function()
+                      return SGet("clickThrough")
+                  end,
+                  setValue=function(v)
+                      SSet("clickThrough", v, function(k) EAB:ApplyClickThroughForBar(k) end)
+                  end },
+                capsInCt and CAPS.Cfg() or EllesmereUI.BlankRowCfg());  y = y - h
+            if capsInCt then CAPS.Cog(ctRow._rightRegion) end
             -- "Toggle Action Bar" keybind: bound key flips the bar shown/hidden at runtime
             -- without writing saved visibility. Enabled only for Always/Never; out of combat
             -- only. Its label sits in the Visibility row, so the button goes there too.
@@ -2349,6 +2402,23 @@ initFrame:SetScript("OnEvent", function(self)
         -----------------------------------------------------------------------
         if not visOnly then
             _, h = W:SectionHeader(parent, SECTION_LAYOUT, y);  y = y - h
+
+            -- WoW Forever: Action Bar 1's end caps and the frame and dividers
+            -- behind its buttons (both shown unless hidden) open the section.
+            if CAPS and CAPS.forever then
+                local capsRow
+                capsRow, h = W:DualRow(parent, y,
+                    CAPS.Cfg(),
+                    { type="toggle", text="Show Bar Background",
+                      tooltip="Show the frame and dividers behind the bar's buttons.",
+                      getValue=function() return not EAB.db.profile.foreverHideBarBg end,
+                      setValue=function(v)
+                          EAB.db.profile.foreverHideBarBg = (not v) or nil
+                          EAB:ApplyPaddingForBar("MainBar")
+                          SUpdatePreviewAndResize()
+                      end });  y = y - h
+                CAPS.Cog(capsRow._leftRegion)
+            end
 
             local iconSizeRow
             iconSizeRow, h = W:DualRow(parent, y,
@@ -5451,14 +5521,15 @@ initFrame:SetScript("OnEvent", function(self)
         end
         return false
     end
-    local procGlowDesc = GO and {
+    local procGlowDesc = {
         host = "icon", excludes = { [4] = true },
-        disabled = function() return EllesmereUI.BlizzStyle.Get("actionbars") or AnyBarHasCustomShape() end,
-        disabledTooltip = function()
-            if EllesmereUI.BlizzStyle.Get("actionbars") then return EllesmereUI.DisabledTooltip(EllesmereUI.BlizzStyle.Label("actionbars"), "disabled") end
-            return "Custom shapes always use Shape Glow -- change your bar shape to None or Cropped to pick a different glow"
-        end,
+        disabled = function() return EllesmereUI.BlizzStyle.Get("actionbars") end,
+        disabledTooltip = function() return EllesmereUI.DisabledTooltip(EllesmereUI.BlizzStyle.Label("actionbars"), "disabled") end,
         rawTooltip = true,
+        -- Custom shapes lock only the style: the forced Shape Glow still takes
+        -- the color, and bars without a custom shape keep the saved style.
+        styleDisabled = AnyBarHasCustomShape,
+        styleDisabledTooltip = "Custom shapes always use Shape Glow -- change your bar shape to None or Cropped to pick a different glow",
         caps = { mode = true, params = true, bg = true },
         defaultColor = { r = 1, g = 0.776, b = 0.376 },
         isOff = function() local p = ProcP(); return p.procGlowEnabled == false or p.procGlowType == 0 end,
@@ -5466,7 +5537,13 @@ initFrame:SetScript("OnEvent", function(self)
         get = function(f)
             local p = ProcP()
             if f == "style" then return p.procGlowType or 1
-            elseif f == "mode" then return EllesmereUI.Glows.DeriveColorMode(p.procGlowColorMode, p.procGlowUseClassColor)
+            elseif f == "mode" then
+                -- The class flag alone decides Class, so a spec override that
+                -- holds only the flag keeps applying; the mode key tells Default
+                -- from Custom. Both are read on every call (override tracing).
+                local m = p.procGlowColorMode
+                if p.procGlowUseClassColor then return "class" end
+                return (m == "default") and "default" or "custom"
             elseif f == "color" then local c = p.procGlowColor or { r = 1, g = 0.776, b = 0.376 }; return c.r, c.g, c.b
             end
             return EllesmereUI.GlowOptions.FlatGet(p, "procGlow", f)
@@ -5497,13 +5574,11 @@ initFrame:SetScript("OnEvent", function(self)
             commit()
         end,
     }
-    if procGlowDesc then
-        GO.RegisterSite({ id = "ab_proc", label = "Custom Proc Glow", group = "module",
-            module = "EllesmereUIActionBars", page = PAGE_ANIMATIONS, section = "CUSTOM PROC GLOW",
-            highlight = "Custom Proc Glow", desc = procGlowDesc,
-            -- Blizzard Style bars draw Blizzard's own proc glow.
-            blocked = function() return EllesmereUI.BlizzStyle.Get("actionbars") end })
-    end
+    GO.RegisterSite({ id = "ab_proc", label = "Custom Proc Glow", group = "module",
+        module = "EllesmereUIActionBars", page = PAGE_ANIMATIONS, section = "CUSTOM PROC GLOW",
+        highlight = "Custom Proc Glow", desc = procGlowDesc,
+        -- Blizzard Style bars draw Blizzard's own proc glow.
+        blocked = function() return EllesmereUI.BlizzStyle.Get("actionbars") end })
 
     -----------------------------------------------------------------------
     --  Preview icon helper for animation dropdown rows: small square icon with a 1px
@@ -5659,8 +5734,10 @@ initFrame:SetScript("OnEvent", function(self)
         ov:SetFrameLevel(f:GetFrameLevel() + 2)
         G.StopAllGlows(ov)
         f:Show()
+        -- Hidden (options closed, page left): stays stopped; OnShow restarts it.
+        if not f:IsVisible() then return end
         -- If disabled (None selected), keep the icon visible but grayed out
-        if not (procGlowDesc and GO.IsCustomGlow(procGlowDesc)) then
+        if not GO.IsCustomGlow(procGlowDesc) then
             f:SetAlpha(0.15)
             return
         end
@@ -5716,7 +5793,7 @@ initFrame:SetScript("OnEvent", function(self)
             p.highlightUseClassColor = v
             p.cooldownEdgeUseClassColor = v
             p.procGlowUseClassColor = v
-            -- A stored proc glow color mode would otherwise outrank the flag.
+            -- Keep the mode key in step with the flag.
             if p.procGlowColorMode == "class" or (v and p.procGlowColorMode) then
                 p.procGlowColorMode = v and "class" or "custom"
             end
@@ -5909,14 +5986,13 @@ initFrame:SetScript("OnEvent", function(self)
         -------------------------------------------------------------------
         _, h = W:SectionHeader(parent, SECTION_PROC_GLOW, y);  y = y - h
 
-        local procSpec = procGlowDesc and GO.DropdownSpec(procGlowDesc, "Custom Proc Glow")
+        local procSpec = GO.DropdownSpec(procGlowDesc, "Custom Proc Glow")
         local function AssistOff()
             return not (GetCVarBool and GetCVarBool("assistedCombatHighlight"))
         end
         -- Row 1: Custom Proc Glow | its color swatches.
-        row, h = W:DualRow(parent, y, procSpec or { type="label", text="" },
-            { type="label", text=procSpec and "Glow Color" or "" })
-        if procSpec and not EllesmereUI._prebuilding then
+        row, h = W:DualRow(parent, y, procSpec, { type="label", text="Glow Color" })
+        if not EllesmereUI._prebuilding then
             local leftRgn = row._leftRegion
             GO.AttachInline(leftRgn, procGlowDesc, row._rightRegion)
             _procGlowPreview = CreatePreviewIcon(leftRgn)
@@ -5929,6 +6005,12 @@ initFrame:SetScript("OnEvent", function(self)
                 _procGlowPreview._icon:SetTexture(iconTex)
                 _procGlowPreview._icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
             end
+            -- Hidden (options closed, page left or rebuilt), the preview's glow
+            -- leaves the glow driver; shown again, it restarts from the current values.
+            _procGlowPreview:SetScript("OnHide", function(self)
+                if self._glowOv then EllesmereUI.Glows.StopAllGlows(self._glowOv) end
+            end)
+            _procGlowPreview:SetScript("OnShow", UpdateProcGlowPreview)
             UpdateProcGlowPreview(_procGlowPreview)
             EllesmereUI.RegisterWidgetRefresh(function() UpdateProcGlowPreview(_procGlowPreview) end)
         end

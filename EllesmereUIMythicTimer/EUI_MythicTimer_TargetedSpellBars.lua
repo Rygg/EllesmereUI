@@ -467,8 +467,9 @@ end
 --------------------------------------------------------------------------------
 --  Important-cast glow: an engine host by choice (the C-side AnimationGroup
 --  path built for the 12.1 forbidden aura partition), so it costs ZERO
---  per-frame Lua regardless of how many bars glow. As a rectangle it offers
---  Pixel Glow only; any other stored style renders as Pixel.
+--  per-frame Lua regardless of how many bars glow. The engine host draws
+--  Pixel, Action Button, GCD, Modern and Classic; a stored Auto-Cast or
+--  Shape pick renders as Modern WoW Glow.
 --------------------------------------------------------------------------------
 local function EnsureGlowOverlay(holder)
     if holder._glow then return holder._glow end
@@ -482,7 +483,7 @@ end
 
 local function ClearImportantGlow(holder)
     if holder._glowActive and holder._glow then
-        if Glows then Glows.StopAllGlows(holder._glow) end
+        Glows.StopAllGlows(holder._glow)
         holder._glow:SetAlpha(0)
         holder._glow:Hide()
         holder._glowActive = false
@@ -496,7 +497,6 @@ local function StartImportantGlowAnim(holder, cfg)
     local bgc = cfg.importantGlowBackgroundColor
     local spec = IMP_GLOW_SPEC
     spec.style = cfg.importantGlowStyle or 1
-    spec.excludes = Glows.RECT_EXCLUDES
     spec.r, spec.g, spec.b = Glows.ResolveColor(cfg.importantGlowColorMode or "custom", c.r, c.g, c.b)
     spec.lines, spec.thickness, spec.speed = cfg.importantGlowLines, cfg.importantGlowThickness, cfg.importantGlowSpeed
     spec.bg = (cfg.importantGlowBackground == true) or nil
@@ -516,7 +516,7 @@ end
 -- branch below is allowed to touch it without deciding what it IS.
 local function ApplyImportantGlow(e, cfg)
     local holder = e.bar
-    if not (cfg.importantGlow and Glows and Glows.StartSpecGlow) then
+    if not cfg.importantGlow then
         ClearImportantGlow(holder)
         return
     end

@@ -1223,11 +1223,9 @@ local function OpenSeasonShortcut(self)
     end
     if self.isFolio then
         if not IsMidnightSeason() or not FolioUnlocked() then return end
+        -- Blizzard's own landing button toggles only once the overlay is applied.
         local page = _G.ExpansionLandingPage
-        if page and ToggleExpansionLandingPage then
-            -- Use the landing page directly; a minimap replacement may leave
-            -- Blizzard's minimap button pointing at an older expansion.
-            if not page:IsShown() then page:RefreshExpansionOverlay() end
+        if page and ToggleExpansionLandingPage and page:IsOverlayApplied() then
             ToggleExpansionLandingPage()
         end
     elseif WeeklyRewards_ShowUI then
@@ -1272,44 +1270,92 @@ local function CreateSeasonIcon(isFolio)
 end
 
 local RefreshSeasonPanel
+-- Event frame of the season plate: registered only while the sheet is open with
+-- Season Panel on (late season data, and the folio's unlock while it is locked).
+local seasonWatch
+
+local function OnSeasonEvent()
+    local wasShown = seasonPanel and seasonPanel:IsShown() or false
+    local oldWidth = wasShown and seasonPanel:GetWidth()
+    RefreshSeasonPanel()
+    local shown = seasonPanel and seasonPanel:IsShown() or false
+    if shown ~= wasShown or (shown and seasonPanel:GetWidth() ~= oldWidth) then
+        if panel and panel:IsShown() then LayoutSockets() end
+        if not STOCK and EllesmereUI._updateCharSheetDurability then
+            EllesmereUI._updateCharSheetDurability()
+        end
+    end
+end
+
+local function SeasonWatch(on)
+    if on == (seasonWatch and seasonWatch.on or false) then return end
+    if not seasonWatch then
+        seasonWatch = CreateFrame("Frame")
+        seasonWatch:SetScript("OnEvent", OnSeasonEvent)
+    end
+    seasonWatch.on = on
+    if on then
+        seasonWatch:RegisterEvent("PLAYER_ENTERING_WORLD")
+        seasonWatch:RegisterEvent("MYTHIC_PLUS_CURRENT_AFFIX_UPDATE")
+    else
+        seasonWatch:UnregisterAllEvents()
+    end
+end
+
 RefreshSeasonPanel = function()
-    local enabled = EllesmereUIDB and EllesmereUIDB.charSheetSeasonPanel == true
-        and EllesmereUIDB.themedCharacterSheet ~= false
+    local db = EllesmereUIDB
+    local on = (db and db.charSheetSeasonPanel ~= false
+        and db.themedCharacterSheet ~= false
         and not EllesmereUI.BlizzWindowSkinsKilled()
-    if not enabled or not (PaperDollFrame and PaperDollFrame:IsVisible()) then
+        and PaperDollFrame and PaperDollFrame:IsVisible()) and true or false
+    SeasonWatch(on)
+    -- The vault is its own opt-in (Great Vault Shortcut, in the Season Panel
+    -- cog); the folio shows in a Midnight season. Nothing to offer = no plate.
+    local vault = on and db.charSheetSeasonVault == true
+    local folio = on and IsMidnightSeason() and true or false
+    if not (vault or folio) then
+        if seasonWatch then seasonWatch:UnregisterEvent("QUEST_LOG_UPDATE") end
         if seasonPanel then seasonPanel:Hide() end
         return
     end
-    if not seasonPanel then
-        seasonPanel = CreatePanelFrame("EUI_CharSheet_SeasonPanel")
-        seasonPanel.vault = CreateSeasonIcon(false)
-        seasonPanel.vault:SetPoint("LEFT", seasonPanel, "LEFT", EDGE_X, ICON_Y)
-        seasonPanel:SetScript("OnHide", function(self) self:UnregisterAllEvents() end)
-        seasonPanel:SetScript("OnEvent", function()
-            local oldWidth = seasonPanel:GetWidth()
-            RefreshSeasonPanel()
-            if seasonPanel:GetWidth() ~= oldWidth then
-                if panel and panel:IsShown() then LayoutSockets() end
-                if not STOCK and EllesmereUI._updateCharSheetDurability then
-                    EllesmereUI._updateCharSheetDurability()
-                end
+    if not seasonPanel then seasonPanel = CreatePanelFrame("EUI_CharSheet_SeasonPanel") end
+    if vault and not seasonPanel.vault then seasonPanel.vault = CreateSeasonIcon(false) end
+    if folio and not seasonPanel.folio then seasonPanel.folio = CreateSeasonIcon(true) end
+    local unlocked = folio and FolioUnlocked() and true or false
+    -- The unlock quest is the one live change left once season data is in, and
+    -- it never reverts: watch the quest log only while a locked folio shows.
+    if folio and not unlocked then
+        seasonWatch:RegisterEvent("QUEST_LOG_UPDATE")
+    else
+        seasonWatch:UnregisterEvent("QUEST_LOG_UPDATE")
+    end
+    if vault ~= seasonPanel.lastVault or folio ~= seasonPanel.lastFolio
+        or unlocked ~= seasonPanel.lastUnlocked then
+        seasonPanel.lastVault, seasonPanel.lastFolio, seasonPanel.lastUnlocked = vault, folio, unlocked
+        local n = (vault and 1 or 0) + (folio and 1 or 0)
+        local contentW = 2 * EDGE_X + n * SIZE + (n - 1) * PAD
+        local panelW = math.max(MIN_W, contentW)
+        -- A plate kept wider by MIN_W centres the row, as the socket strip does.
+        local x = (panelW - contentW) / 2 + EDGE_X
+        if seasonPanel.vault then
+            seasonPanel.vault:SetShown(vault)
+            if vault then
+                seasonPanel.vault:ClearAllPoints()
+                seasonPanel.vault:SetPoint("LEFT", seasonPanel, "LEFT", x, ICON_Y)
+                x = x + SIZE + PAD
             end
-        end)
+        end
+        if seasonPanel.folio then
+            seasonPanel.folio:SetShown(folio)
+            if folio then
+                seasonPanel.folio:ClearAllPoints()
+                seasonPanel.folio:SetPoint("LEFT", seasonPanel, "LEFT", x, ICON_Y)
+                seasonPanel.folio:SetAlpha(unlocked and 1 or 0.4)
+            end
+        end
+        seasonPanel:SetWidth(panelW)
     end
-    local midnight = IsMidnightSeason()
-    if midnight and not seasonPanel.folio then
-        seasonPanel.folio = CreateSeasonIcon(true)
-        seasonPanel.folio:SetPoint("LEFT", seasonPanel.vault, "RIGHT", PAD, 0)
-    end
-    if seasonPanel.folio then
-        seasonPanel.folio:SetShown(midnight and true or false)
-        if midnight then seasonPanel.folio:SetAlpha(FolioUnlocked() and 1 or 0.4) end
-    end
-    seasonPanel:SetWidth(math.max(MIN_W, 2 * EDGE_X + SIZE + (midnight and (SIZE + PAD) or 0)))
     seasonPanel:Show()
-    seasonPanel:RegisterEvent("QUEST_LOG_UPDATE")
-    seasonPanel:RegisterEvent("PLAYER_ENTERING_WORLD")
-    seasonPanel:RegisterEvent("MYTHIC_PLUS_CURRENT_AFFIX_UPDATE")
 end
 
 local function BuildPanel()
@@ -1360,12 +1406,13 @@ local function OnHideAll()
     UnregisterShownEvents()
     if panel then panel:Hide() end
     if seasonPanel then seasonPanel:Hide() end
+    SeasonWatch(false)
 end
 
 -- Live apply from the options toggle (no reload).
 local function RefreshFromOptions()
     RefreshSeasonPanel()
-    if not (PaperDollFrame and PaperDollFrame:IsShown()) then return end
+    if not (PaperDollFrame and PaperDollFrame:IsVisible()) then return end
     if EllesmereUIDB and (EllesmereUIDB.themedCharacterSheet == false or EllesmereUI.BlizzWindowSkinsKilled()) then return end
     if EllesmereUIDB and EllesmereUIDB.charSheetSocketPanel == false then
         CloseFlyout()

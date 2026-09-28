@@ -834,8 +834,10 @@ local function PlayerBuffChain(s)
             for filterId in pairs(s.buffNegFilters) do
                 local f = ns.PAB_GetFilter and ns.PAB_GetFilter(filterId)
                 if f and f.spells then
+                    -- Ids a preset keeps only for the other client never count
+                    -- here (ns.PAB_OtherClientSpell), same as on Player Aura Bars.
                     for id, on in pairs(f.spells) do
-                        if on then
+                        if on and not ns.PAB_OtherClientSpell(f, id) then
                             ex = ex or {}
                             ex[id] = true
                             ExpandBuffFamily(ex, id, f.spells)
@@ -872,7 +874,7 @@ local function PlayerBuffChain(s)
             local f = ns.PAB_GetFilter and ns.PAB_GetFilter(filterId)
             if f and f.spells then
                 for id, on in pairs(f.spells) do
-                    if on then
+                    if on and not ns.PAB_OtherClientSpell(f, id) then
                         inc = inc or {}
                         if not inc[id] then
                             inc[id] = true
@@ -902,7 +904,7 @@ local function PlayerBuffChain(s)
             local f = ns.PAB_GetFilter and ns.PAB_GetFilter(filterId)
             if f and f.spells then
                 for id, on in pairs(f.spells) do
-                    if on then
+                    if on and not ns.PAB_OtherClientSpell(f, id) then
                         hide[id] = true
                         ExpandBuffFamily(hide, id, f.spells)
                     end
@@ -1511,8 +1513,8 @@ end
 
 function PurgeGlow.Extra(button, d, style)
     ApplyUFText(button, d, style)
+    if not style.purgeSpec then return end
     local Glows = EllesmereUI.Glows
-    if not (Glows and Glows.StartSpecGlow and style.purgeSpec) then return end
     local host = d.ufPurgeGlow
     if not host then
         -- The first call runs inside initializeFrame, the button's one legal
@@ -1526,7 +1528,8 @@ function PurgeGlow.Extra(button, d, style)
         end
         host:EnableMouse(false)
         d.ufPurgeGlow = host
-        Glows.PrewarmEngineHost(host, style.width, style.height)
+        -- nil need: every family (Pixel, the flipbooks and Blizzard Border).
+        Glows.PrewarmEngineHost(host, style.width, style.height, nil)
     end
     -- C-side animations only (engine-button subtree); Blizzard Border
     -- (static stealable art) renders through the same call.
@@ -1535,7 +1538,6 @@ end
 
 -- Unset color = "default" mode: the suite's default look (gold).
 function PurgeGlow.Spec(s)
-    local Glows = EllesmereUI.Glows
     local c = s.buffPurgeGlowColor
     local mode = s.buffPurgeGlowColorMode or (c and "custom" or "default")
     local bgc = s.buffPurgeGlowBackgroundColor
@@ -1546,9 +1548,10 @@ function PurgeGlow.Spec(s)
         bg = s.buffPurgeGlowBackground == true or nil,
         bgR = bgc and bgc.r, bgG = bgc and bgc.g, bgB = bgc and bgc.b,
     }
-    if Glows and Glows.ResolveColor then
-        spec.r, spec.g, spec.b = Glows.ResolveColor(mode, c and c.r, c and c.g, c and c.b)
-    end
+    spec.r, spec.g, spec.b = EllesmereUI.Glows.ResolveColor(mode, c and c.r, c and c.g, c and c.b)
+    -- Class mode: the palette colour this spec (and Register's print) holds,
+    -- for the colours-changed hook below the reload.
+    if mode == "class" then PurgeGlow.ccR, PurgeGlow.ccG, PurgeGlow.ccB = spec.r, spec.g, spec.b end
     return spec
 end
 ns.UF_PurgeGlowSpec = PurgeGlow.Spec
@@ -2931,6 +2934,29 @@ function ns.UF_ReloadAllAuraContainers()
             ns.UF_ReloadAuraContainers(entry.frame, unitKey)
         end
     end
+end
+
+-- Colors page edits (swatches, darken, resets, profile switches) all end in
+-- ApplyColorsToOUF. Once a Class-mode purge glow was built, a changed class
+-- colour re-runs the reload; the purge print carries the colour, so only
+-- that glow style restyles. Calls in one frame (a profile switch can make
+-- two) collapse into one check on the next frame: the flush frame stays
+-- hidden until a call and hides itself before working.
+do
+    local flush = CreateFrame("Frame")
+    flush:Hide()
+    flush:SetScript("OnUpdate", function(self)
+        self:Hide()
+        local r0 = PurgeGlow.ccR
+        if r0 == nil then return end
+        local r, g, b = EllesmereUI.Glows.ResolveColor("class")
+        if r ~= r0 or g ~= PurgeGlow.ccG or b ~= PurgeGlow.ccB then
+            ns.UF_ReloadAllAuraContainers()
+        end
+    end)
+    hooksecurefunc(EllesmereUI, "ApplyColorsToOUF", function()
+        if PurgeGlow.ccR ~= nil then flush:Show() end
+    end)
 end
 
 -- Cast bar settle: the bar's saved position is applied by the unlock system's

@@ -462,6 +462,7 @@ local function FxListFP(list)
         parts[#parts + 1] = table.concat({
             table.concat(keys, "+"),
             tostring(e.glowType or 0), e.glowClassColor and "cc" or "-",
+            ns.RF_GlowClassFP(e.glowColorMode, e.glowClassColor),
             string.format("%.2f,%.2f,%.2f", e.glowR or 1, e.glowG or 0.776, e.glowB or 0.376),
             tostring(e.glowColorMode), tostring(e.glowLines), tostring(e.glowThickness),
             tostring(e.glowSpeed), tostring(e.glowBackground),
@@ -943,6 +944,7 @@ function ns.DM_CfgFP()
                     t.color.r or 1, t.color.g or 1, t.color.b or 1, t.color.a or 1) or "-",
                 tostring(t.glowType), tostring(t.glowLines), tostring(t.glowThickness),
                 tostring(t.glowSpeed), tostring(t.glowColorMode), tostring(t.opacity),
+                ns.RF_GlowClassFP(t.glowColorMode),
                 tostring(t.glowBackground), t.glowBackgroundColor and string.format("%.2f,%.2f,%.2f",
                     t.glowBackgroundColor.r or 0, t.glowBackgroundColor.g or 0, t.glowBackgroundColor.b or 0) or "-",
                 tostring(t.orientation), tostring(t.reverseFill),
@@ -1872,20 +1874,21 @@ local fxRefs = setmetatable({}, { __mode = "k" })
 -- health), the dispel-overlay/BmEffectInit precedent. FxHideAll hides every effect visual on one slot button
 -- (shared by filter-gated slots and teardown paths).
 local function FxHideAll(dd)
-    local Glows = EllesmereUI.Glows
     if dd.dmFxGlow then
-        if dd.dmFxGlow._euiGlowActive and Glows and Glows.StopGlow then
-            Glows.StopGlow(dd.dmFxGlow)
-        end
+        if dd.dmFxGlow._euiGlowActive then EllesmereUI.Glows.StopGlow(dd.dmFxGlow) end
         dd.dmFxGlow:Hide()
     end
     if dd.dmFxHcFrame then dd.dmFxHcFrame:Hide() end
     if dd.dmFxGeoF then dd.dmFxGeoF:Hide() end
 end
 
+-- Frame Glow tiles draw Pixel only: their prewarm builds the animated ants alone.
+local TILE_GLOW_NEED = { ants = true }
+
 -- Creation-window builder: one kind-specific visual set per effect slot, parked hidden until the applier arms it.
 -- Runs in extraInit inside a CreateFrameBatch: an error here kills the whole slot declaration, hence the pcall-degraded engine binding.
-local function FxCreateVisuals(button, dd, kind, hostBtn, health)
+-- owner: the tile container, which keys its Health Bar Color overlays in the bar's tint registry (the stale sweep drops only its own).
+local function FxCreateVisuals(button, dd, kind, hostBtn, health, owner)
     if not dd then return end
     if kind == "glow" then
         local g = CreateFrame("Frame", nil, button)
@@ -1896,24 +1899,22 @@ local function FxCreateVisuals(button, dd, kind, hostBtn, health)
         g:EnableMouse(false)
         g:Hide()
         dd.dmFxGlow = g
-        -- Every region a later style/background change can need, created here in the window.
-        if EllesmereUI.Glows and EllesmereUI.Glows.PrewarmEngineHost then
-            EllesmereUI.Glows.PrewarmEngineHost(g, 24, 24)
-        end
+        -- Every region a later colour/parameter/background change can need, created here in the window.
+        EllesmereUI.Glows.PrewarmEngineHost(g, 24, 24, TILE_GLOW_NEED)
     elseif kind == "healthcolor" then
         -- BM healthcolor parity via an owned wrapper: level-tied WITH (not above) the health frame so the tint
         -- sorts against health's ARTWORK sublevels (above fill=0, below heal absorb/prediction=+1, shields=+3);
-        -- anchored to the FILL texture so it covers only the filled portion. Wrapper is ours, so the level tie stays legal.
+        -- anchored to the current-health area (the fill texture, or the rest of the bar under Inverted Fill) so it
+        -- covers only current health. Wrapper is ours, so the level tie stays legal.
         local f = CreateFrame("Frame", nil, button)
-        local fill = health.GetStatusBarTexture and health:GetStatusBarTexture()
-        f:SetAllPoints(fill or health)
+        ns.RF_AnchorCurHealth(f, health, health.GetStatusBarTexture and health:GetStatusBarTexture())
         f:SetFrameLevel(health:GetFrameLevel())
         local tex = f:CreateTexture(nil, "ARTWORK", nil, 2)
         tex:SetAllPoints(f)
         f:Hide()
         dd.dmFxHcFrame = f
         dd.dmFxHc = tex
-        ns.RF_RegisterBarTint(health, tex, f, "dm")
+        ns.RF_RegisterBarTint(health, tex, f, owner)
     elseif kind == "square" then
         local f = CreateFrame("Frame", nil, button)
         f:SetPoint("CENTER", health, "CENTER")
@@ -1947,7 +1948,7 @@ local function FxApplyInner(button, dd, refs, fx)
     if fx.kind == "glow" then
         local Glows = EllesmereUI.Glows
         local host = dd.dmFxGlow
-        if not (Glows and host) then return end -- created in extraInit
+        if not host then return end -- created in extraInit
         host:Show()
         -- Tile color mode: nil has always meant default here (proc gold).
         local spec = FX_GLOW_SPEC
@@ -1973,6 +1974,10 @@ local function FxApplyInner(button, dd, refs, fx)
         -- The bar itself is OURS and outside that subtree, so the tint can read its
         -- fill texture here and keep the health bar's shading instead of flattening it.
         ns.RF_TintOverBarFill(tex, refs.health, fx.r or 1, fx.g or 0.2, fx.b or 0.2, fx.a or 0.5)
+        -- Re-anchored to the bar's current fill direction on every restyle as well: a
+        -- container back from the stale sweep missed the registry's re-anchor.
+        ns.RF_AnchorCurHealth(f, refs.health,
+            refs.health.GetStatusBarTexture and refs.health:GetStatusBarTexture())
         f:Show()
 
     elseif fx.kind == "square" then
@@ -2196,6 +2201,7 @@ local function EnsureTileStyle(d, s, t, szOv, szCat)
         end
         v = table.concat({ tostring(t.type), tostring(t.glowType), tostring(t.glowLines),
             tostring(t.glowThickness), tostring(t.glowSpeed), tostring(t.glowColorMode),
+            ns.RF_GlowClassFP(t.glowColorMode),
             tostring(t.glowBackground), t.glowBackgroundColor and string.format("%.2f,%.2f,%.2f",
                 t.glowBackgroundColor.r or 0, t.glowBackgroundColor.g or 0, t.glowBackgroundColor.b or 0) or "-",
             tostring(t.opacity), tostring(t.size),
@@ -2424,7 +2430,7 @@ local function EnsureTileContainer(d, t)
                             fxRefs[slotButton] = { host = host, health = hp }
                             slotButton:SetPoint("CENTER", hp, "CENTER")
                             slotButton:SetMouseMotionEnabled(false)
-                            FxCreateVisuals(slotButton, d2, tileKind, host, hp)
+                            FxCreateVisuals(slotButton, d2, tileKind, host, hp, container)
                             if style then FxApply(slotButton, d2, style) end
                         end,
                     })
@@ -2663,8 +2669,15 @@ function ns.DM_ApplyDebuffConfig(container, d, s, styleKey)
                 local tc = EnsureTileContainer(d, t)
                 if tc then
                     local tStyleKey = EnsureTileStyle(d, s, t)
+                    -- Back from the stale sweep: its overlays left the bar's registry and
+                    -- missed any fill swap or fill direction change meanwhile.
+                    if tc._dmSwept then
+                        tc._dmSwept = nil
+                        tc._dmRestyle = true
+                    end
                     if tc._dmRestyle then
-                        -- Restored healthcolor container: repaint re-registers its overlays on the bar.
+                        -- Restored healthcolor container: repaint re-registers its overlays on the bar
+                        -- and re-anchors them to the current fill direction (FxApplyInner).
                         tc._dmRestyle = nil
                         AK.RestyleSoon(tStyleKey)
                     end
@@ -2740,7 +2753,7 @@ function ns.DM_ApplyDebuffConfig(container, d, s, styleKey)
                                                     fxRefs[slotButton] = { host = host, health = hp }
                                                     slotButton:SetPoint("CENTER", hp, "CENTER")
                                                     slotButton:SetMouseMotionEnabled(false)
-                                                    FxCreateVisuals(slotButton, d2, tileKind, host, hp)
+                                                    FxCreateVisuals(slotButton, d2, tileKind, host, hp, tc2)
                                                     if style then FxApply(slotButton, d2, style) end
                                                 end,
                                             })
@@ -2902,15 +2915,21 @@ function ns.DM_ApplyDebuffConfig(container, d, s, styleKey)
         if dmTiles then
             for i = 1, #dmTiles do present[dmTiles[i].id] = true end
         end
-        local stale = false
         for id, c in pairs(live) do
-            if not present[id] then c:Hide(); stale = true end
+            if not present[id] then
+                c:Hide()
+                -- A parked container keeps its slot buttons, so a healthcolor tile's
+                -- overlays would stay registered on the health bar and every later
+                -- layout pass would walk them for the session. Only this container's
+                -- own are dropped (they are keyed to it): live tiles stay registered,
+                -- so a fill swap or fill direction change still re-anchors them. It
+                -- restyles once if it comes back (_dmSwept, the tile loop above).
+                if c._dmType == "healthcolor" then
+                    if d.rfcHealth then ns.RF_ClearBarTints(d.rfcHealth, c) end
+                    c._dmSwept = true
+                end
+            end
         end
-        -- A parked container keeps its slot buttons, so any healthcolor overlay it
-        -- built stays registered on the health bar and every later layout pass
-        -- walks it. Nothing releases these, so without this they accumulate for
-        -- the session. Live tiles re-register on their next paint.
-        if stale and d.rfcHealth then ns.RF_ClearBarTints(d.rfcHealth, "dm") end
     end
 
     -- Party Frames kit: the lowest seat the debuffs reach below the frame
@@ -3066,6 +3085,45 @@ local function SpecBucket(dm, key, create)
     return b
 end
 
+-- WoW Forever: a class acts as the first of its retail specs (class order)
+-- whose "spec<ID>" bucket holds data (tiles, per-spec disables or Base
+-- Icons off), else its first spec. Class rows edit that same bucket.
+function ns.DM_BucketHasData(id, st)
+    local b = st and st["spec" .. id]
+    if b == nil then return false end
+    if (b.tiles and #b.tiles > 0) or b.baseOff == true then return true end
+    local dis = b.inhDis
+    if not (dis and next(dis) ~= nil) then return false end
+    if not EllesmereUI.IS_FOREVER then return true end
+    -- WoW Forever renders All Specs and the class's own bucket only, so only
+    -- a disable of an All Specs tile counts. Scans dm.tiles in place and
+    -- never creates it.
+    local dm = DM()
+    local base = dm and dm.tiles
+    for i = 1, (base and #base or 0) do
+        if dis[base[i].id] then return true end
+    end
+    return false
+end
+-- While a spec override's Debuff Manager fork is live (outside a
+-- conditional's editing session), the player's class acts as the spec that
+-- fork serves instead (published by Spec Overrides, seeded from the saved
+-- pointer at the first read).
+function ns.DM_ForeverSpecID(token)
+    if not EllesmereUI._SO_DmForkSeeded then EllesmereUI._SO_SeedForkSpec(true) end
+    local fk = EllesmereUI.SpecOverrides_DmForkSpecID
+    if fk and not EllesmereUI._dmSessionGid
+       and (token == nil or token == EllesmereUI.SpecClassOf(fk)) then
+        return fk
+    end
+    local dm = DM()
+    return EllesmereUI.ForeverClassSpec(token, ns.DM_BucketHasData, dm and dm.specTiles)
+end
+function ns.DM_ForeverKey(token)
+    local sid = ns.DM_ForeverSpecID(token)
+    return sid and ("spec" .. sid) or nil
+end
+
 -- Bucket tile array for an EDITED view ("allspecs"/nil = the legacy array).
 function ns.DM_BucketTiles(key, create)
     if not key or key == "allspecs" then return ns.DM_Tiles() end
@@ -3116,6 +3174,7 @@ function ns.DM_CurrentSpecBaseOff()
     if not st then return false end
     local idx = GetSpecialization and GetSpecialization()
     local sid = idx and GetSpecializationInfo and GetSpecializationInfo(idx) or nil
+    if EllesmereUI.IS_FOREVER then sid = ns.DM_ForeverSpecID() end
     local b = sid and st["spec" .. sid] or nil
     return (b and b.baseOff) and true or false
 end
@@ -3143,6 +3202,7 @@ function ns.DM_ActiveTiles()
     do
         local idx = GetSpecialization and GetSpecialization()
         sid = idx and GetSpecializationInfo and GetSpecializationInfo(idx) or nil
+        if EllesmereUI.IS_FOREVER then sid = ns.DM_ForeverSpecID() end
     end
     local con = st and sid and st["spec" .. sid] or nil
     local dis = con and con.inhDis or nil
@@ -3163,7 +3223,9 @@ function ns.DM_ActiveTiles()
                 if not (filtered and dis and dis[t.id]) then out[#out + 1] = t end
             end
         end
-        if not (ns.BM_SpecKeyForSpecID and ns.BM_SpecKeyForSpecID(sid)) then
+        -- WoW Forever: a class renders All Specs and its own bucket only
+        -- (group buckets are not offered there).
+        if not EllesmereUI.IS_FOREVER and not (ns.BM_SpecKeyForSpecID and ns.BM_SpecKeyForSpecID(sid)) then
             AddBucket("nonhealer", true)
         end
         local roleKey = ns.BM_RoleBucketForSpecID and ns.BM_RoleBucketForSpecID(sid)

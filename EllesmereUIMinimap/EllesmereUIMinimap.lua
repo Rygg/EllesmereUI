@@ -4858,8 +4858,9 @@ local function ApplyMinimap()
             clockBg:RegisterForClicks("AnyUp")
             clockBg:SetScript("OnClick", function()
                 -- With the Great Vault hover tooltip assigned, clicking the clock opens the vault (same as the Great Vault button), not the clock config.
+                -- WoW Forever has no Great Vault: a saved "vault" reads as none there.
                 local mp = EBS.db and EBS.db.profile.minimap
-                if mp and mp.clockHoverTooltip == "vault" then
+                if mp and mp.clockHoverTooltip == "vault" and not EllesmereUI.IS_FOREVER then
                     ToggleGreatVault()
                     return
                 end
@@ -4926,6 +4927,7 @@ local function ApplyMinimap()
                 EBS._HVRevealMapHover()
                 local mp = EBS.db and EBS.db.profile.minimap
                 local mode = (mp and mp.clockHoverTooltip) or "none"
+                if EllesmereUI.IS_FOREVER and mode == "vault" then mode = "none" end
                 if mode == "lockouts" then
                     if EllesmereUI.InProtectedInstance() then return end
                     local entries = GetCalendarLockoutEntries()
@@ -5166,6 +5168,7 @@ local function ApplyMinimap()
                 EBS._HVRevealMapHover()
                 local mp = EBS.db and EBS.db.profile.minimap
                 local mode = (mp and mp.fpsHoverTooltip) or "none"
+                if EllesmereUI.IS_FOREVER and mode == "vault" then mode = "none" end
                 if mode == "lockouts" then
                     if EllesmereUI.InProtectedInstance() then return end
                     local entries = GetCalendarLockoutEntries()
@@ -5183,7 +5186,7 @@ local function ApplyMinimap()
             fpsBg:SetScript("OnMouseUp", function(_, button)
                 if button ~= "LeftButton" then return end
                 local mp = EBS.db and EBS.db.profile.minimap
-                if mp and mp.fpsHoverTooltip == "vault" then
+                if mp and mp.fpsHoverTooltip == "vault" and not EllesmereUI.IS_FOREVER then
                     ToggleGreatVault()
                 end
             end)
@@ -5201,7 +5204,9 @@ local function ApplyMinimap()
         fpsBg:SetScale(p.fpsScale or 1.0)
         _G._EBS_FpsBg = fpsBg
         -- Mouse only while a hover tooltip is assigned, so it never blocks map clicks
-        fpsBg:EnableMouse((p.fpsHoverTooltip or "none") ~= "none")
+        -- (WoW Forever reads a saved "vault" as none).
+        fpsBg:EnableMouse((p.fpsHoverTooltip or "none") ~= "none"
+            and not (EllesmereUI.IS_FOREVER and p.fpsHoverTooltip == "vault"))
         fpsBg:Show()
         fpsBg._updateNow()
     else
@@ -5687,14 +5692,6 @@ function EBS:OnInitialize()
                 mp.hideExtraBtns.portals = mp.hidePortals
                 mp.hidePortals = nil
             end
-        end
-        -- WoW Forever has no Great Vault: a saved "vault" hover tooltip (clock or
-        -- FPS readout) falls back to none there, since both hover and click paths
-        -- would otherwise open a vault that does not exist. The options dropdowns
-        -- do not offer the choice on that client.
-        if EllesmereUI.IS_FOREVER then
-            if mp.clockHoverTooltip == "vault" then mp.clockHoverTooltip = "none" end
-            if mp.fpsHoverTooltip == "vault" then mp.fpsHoverTooltip = "none" end
         end
     end
 

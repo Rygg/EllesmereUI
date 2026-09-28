@@ -290,7 +290,7 @@ end
 local function ApplyNPBuffExtra(button, d, style)
     ApplyNPText(button, d, style)
     local Glows = EllesmereUI.Glows
-    if style.purgeGlow and style.purgeSpec and Glows and Glows.StartSpecGlow then
+    if style.purgeGlow and style.purgeSpec then
         local sz = style.width or 24
         local host = d.npGlowHost
         if not host then
@@ -313,7 +313,8 @@ local function ApplyNPBuffExtra(button, d, style)
             end
             host:EnableMouse(false)
             d.npGlowHost = host
-            Glows.PrewarmEngineHost(host, sz, style.height or sz)
+            -- nil need: every family (Pixel, the flipbooks and Blizzard Border).
+            Glows.PrewarmEngineHost(host, sz, style.height or sz, nil)
         end
         -- Every buff in this row is dispellable (the group filter says so), so the glow
         -- rides the button's own visibility -- no readback of per-aura state.
@@ -324,9 +325,7 @@ local function ApplyNPBuffExtra(button, d, style)
         -- Border (static stealable art) renders through the same call.
         Glows.StartSpecGlow(host, style.purgeSpec, sz, style.height or sz, "engine")
     elseif d.npGlowHost then
-        if Glows and Glows.StopGlow and d.npGlowHost._euiGlowActive then
-            Glows.StopGlow(d.npGlowHost)
-        end
+        if d.npGlowHost._euiGlowActive then Glows.StopGlow(d.npGlowHost) end
         d.npGlowHost:SetAlpha(0)
     end
 end
@@ -1642,6 +1641,14 @@ local function StyleFPFor(kind, idx)
         if sp then
             purge = FP(idx or 1, glow, sp.style, sp.r, sp.g, sp.b, sp.lines, sp.thickness,
                 sp.speed, sp.bg, sp.bgR, sp.bgG, sp.bgB)
+            -- Class mode: the print holds the palette colour; keep it for the
+            -- colours-changed hook below NPC_ReloadAll. The mode is one profile
+            -- value, so any other mode clears it (no reload on later edits).
+            if PVal("dispelGlowColorMode") ~= "class" then
+                NPB.ccR = nil
+            elseif glow then
+                NPB.ccR, NPB.ccG, NPB.ccB = EllesmereUI.Glows.ResolveColor("class")
+            end
         end
     end
     local durFP = FP(dur.size, dur.x, dur.y, dur.pos, dur.color.r, dur.color.g, dur.color.b)
@@ -1870,6 +1877,27 @@ function ns.NPC_ReloadAll()
     for plate in pairs(active) do
         if plate.npcLockout then NPLockoutBorder(plate.npcLockout) end
     end
+end
+
+-- Colors page edits (swatches, darken, resets, profile switches) all end in
+-- ApplyColorsToOUF. Once a Class-mode dispel glow was printed, a changed class
+-- colour re-runs the reload; the purge print carries the colour, so only the
+-- glow styles restyle. Calls in one frame (a profile switch can make two)
+-- collapse into one check on the next frame: the flush frame stays hidden
+-- until a call and hides itself before working.
+do
+    local flush = CreateFrame("Frame")
+    flush:Hide()
+    flush:SetScript("OnUpdate", function(self)
+        self:Hide()
+        local r0 = NPB.ccR
+        if r0 == nil then return end
+        local r, g, b = EllesmereUI.Glows.ResolveColor("class")
+        if r ~= r0 or g ~= NPB.ccG or b ~= NPB.ccB then ns.NPC_ReloadAll() end
+    end)
+    hooksecurefunc(EllesmereUI, "ApplyColorsToOUF", function()
+        if NPB.ccR ~= nil then flush:Show() end
+    end)
 end
 
 ------------------------------------------------------------------------------

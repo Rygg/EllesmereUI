@@ -6,6 +6,8 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  of its own page's controls (EllesmereUI.GlowOptions sites). Apply to All
 --  only changes active custom glows; a row's or a module's Apply also turns
 --  off glows on and replaces Blizzard Default, Solid and Blizzard Border.
+--  Glows kept per icon, indicator or filter are listed as hints and never
+--  taken by the template; a site's own confirm prompt runs as for an edit.
 -------------------------------------------------------------------------------
 
 local PAGE_GLOWS = "Glows"
@@ -16,19 +18,25 @@ local GLOBAL_KEY = "_EUIGlobal"
 local _glExpanded, _glHideInactive = {}, {}
 local _glRebuildQueued = false
 
-local function GO() return EllesmereUI.GlowOptions end
+-- Loads first in the options addon, before this file.
+local GO = EllesmereUI.GlowOptions
 
 -------------------------------------------------------------------------------
 --  Template (account-wide; only ever a pattern, no module reads it)
 -------------------------------------------------------------------------------
 local TEMPLATE_DEFAULTS = { style = 1, mode = "default", lines = 8, thickness = 2, speed = 4 }
 
+-- Read: the saved template, else the defaults. A read never writes, so a page
+-- build (the hidden search pass included) saves nothing.
 local function Template()
-    if not EllesmereUIDB then EllesmereUIDB = {} end
+    return EllesmereUIDB.glowTemplate or TEMPLATE_DEFAULTS
+end
+
+-- Write: the saved template, made from the defaults on the first edit.
+local function TemplateW()
     local t = EllesmereUIDB.glowTemplate
     if not t then
-        t = {}
-        for k, v in pairs(TEMPLATE_DEFAULTS) do t[k] = v end
+        t = CopyTable(TEMPLATE_DEFAULTS)
         EllesmereUIDB.glowTemplate = t
     end
     return t
@@ -54,7 +62,7 @@ local function TemplateDesc()
             end
         end,
         set = function(f, a, b, c)
-            local t = Template()
+            local t = TemplateW()
             if f == "style" then t.style = a
             elseif f == "mode" then
                 t.mode = a
@@ -84,9 +92,7 @@ end
 -- entry); sub: the in-card group a row is listed under.
 local function CollectSites()
     local out = {}
-    local g = GO()
-    if not g then return out end
-    for _, entry in ipairs(g.sites) do
+    for _, entry in ipairs(GO.sites) do
         if entry.list then
             for _, item in ipairs(entry.list() or {}) do
                 out[#out + 1] = { module = entry.module, label = item.label, sub = item.sub or entry.sub,
@@ -100,13 +106,45 @@ local function CollectSites()
     return out
 end
 
+-- Glows kept per entry in modules that register no hint of their own: added
+-- at page build while the module is loaded, and only when no entry holds the
+-- id yet (a module's own registration wins).
+local ENTRY_GLOW_INFOS = {
+    { id = "rf_bm_icon_glows", label = "Buff Manager Icon Glows",
+      module = "EllesmereUIRaidFrames", page = "Buff Manager",
+      info = { glyph = "icon",
+        tooltip = "Icon Glow is set per indicator on the Buff Manager page. The template never changes it.",
+        text = function() return EllesmereUI.L("Set per indicator") end } },
+    { id = "rf_dm_glows", label = "Debuff Manager Glows",
+      module = "EllesmereUIRaidFrames", page = "Debuff Manager",
+      info = { glyph = "icon",
+        tooltip = "Icon Effects glows are set per filter and Frame Glow per tile on the Debuff Manager page. The template never changes them.",
+        text = function() return EllesmereUI.L("Set per filter and tile") end } },
+    { id = "pab_icon_glows", label = "Player Aura Bars Icon Glows",
+      module = "EllesmereUIUnitFrames", page = "Player Aura Bars",
+      info = { glyph = "icon",
+        tooltip = "Icon Effects glows are set per filter on each bar of the Player Aura Bars page. The template never changes them.",
+        text = function() return EllesmereUI.L("Set per filter") end } },
+}
+
+local function EnsureEntryGlowInfos()
+    for _, e in ipairs(ENTRY_GLOW_INFOS) do
+        if EllesmereUI.ModuleNS(e.module) then
+            local have = false
+            for i = 1, #GO.sites do
+                if GO.sites[i].id == e.id then have = true; break end
+            end
+            if not have then GO.RegisterSite(e) end
+        end
+    end
+end
+
 -- Info entries ({ info = { text, tooltip } }): no glow of their own, a hint
 -- with a count and Go to Settings for glows kept per entry elsewhere.
 local function CollectInfos()
+    EnsureEntryGlowInfos()
     local out = {}
-    local g = GO()
-    if not g then return out end
-    for _, entry in ipairs(g.sites) do
+    for _, entry in ipairs(GO.sites) do
         if entry.info then
             out[#out + 1] = { module = entry.module, label = entry.label, sub = entry.sub,
                               info = entry.info, nav = entry }
@@ -119,43 +157,46 @@ local function Blocked(site)
     return site.entry.blocked and site.entry.blocked() or false
 end
 
+-- Can the template be written here at all (not locked by Blizzard Style or
+-- its own settings page, and not a paramsOnly site: the Pixel Glow
+-- parameters per-icon glows read, which the template never changes)?
+local function CanTake(site)
+    local desc = site.desc
+    return not Blocked(site) and not desc.paramsOnly and not GO.StyleLocked(desc)
+end
+
 -- An active custom glow: what the template can change (the rest is hidden
 -- until the card shows its inactive glows).
 local function IsActive(site)
-    local desc = site.desc
-    return not Blocked(site) and GO().IsCustomGlow(desc) and not (desc.disabled and desc.disabled())
+    return CanTake(site) and GO.IsCustomGlow(site.desc)
 end
 
 local ST_GREY, ST_GREEN, ST_AMBER = { 0.5, 0.5, 0.5 }, { 0.05, 0.82, 0.62 }, { 0.88, 0.69, 0.31 }
+-- The card summary's "differ" count wears the status dot's amber.
+local AMBER_CODE = EllesmereUI.HexColor(ST_AMBER[1], ST_AMBER[2], ST_AMBER[3])
 
 -- Status of a site against the template: dot color, short word, tooltip text,
 -- and whether it matches (one MatchesTemplate per evaluation).
 local function SiteStatus(site, t)
-    local g = GO()
     local desc = site.desc
     if Blocked(site) then return ST_GREY, EllesmereUI.L("Blizzard"), EllesmereUI.L("Blizzard Style"), false end
-    if not g.IsCustomGlow(desc) then
-        if g.IsOff(desc) then return ST_GREY, EllesmereUI.L("Off"), EllesmereUI.L("Off"), false end
+    if desc.paramsOnly then
+        return ST_GREY, EllesmereUI.L("Per icon"),
+            EllesmereUI.L("The Pixel Glow settings this bar's per-icon glows use. The template never changes them."), false
+    end
+    if not GO.IsCustomGlow(desc) then
+        if GO.IsOff(desc) then return ST_GREY, EllesmereUI.L("Off"), EllesmereUI.L("Off"), false end
         return ST_GREY, EllesmereUI.L("Not custom"), EllesmereUI.L("Not a custom glow"), false
     end
-    if g.MatchesTemplate(desc, t) then
+    if GO.MatchesTemplate(desc, t) then
         return ST_GREEN, EllesmereUI.L("Matches"), EllesmereUI.L("Matches template"), true
     end
-    if not desc.paramsOnly then
-        local idx, converted = g.Resolve(desc, t.style or 1)
-        if converted then
-            return ST_AMBER, EllesmereUI.L("Differs"), EllesmereUI.Lf("Differs (template shows as %s)",
-                EllesmereUI.L(EllesmereUI.Glows.STYLES[idx].name)), false
-        end
+    local idx, converted = GO.Resolve(desc, t.style or 1)
+    if converted then
+        return ST_AMBER, EllesmereUI.L("Differs"), EllesmereUI.Lf("Differs (template shows as %s)",
+            EllesmereUI.L(EllesmereUI.Glows.STYLES[idx].name)), false
     end
     return ST_AMBER, EllesmereUI.L("Differs"), EllesmereUI.L("Differs from template"), false
-end
-
--- Can the template be written here at all (not locked by Blizzard Style or
--- its own settings page)?
-local function CanTake(site)
-    local desc = site.desc
-    return not Blocked(site) and not (desc.disabled and desc.disabled())
 end
 
 -- Would ApplyTo change this site? anyState: any unlocked site that differs
@@ -166,38 +207,75 @@ local function Eligible(site, t, anyState)
     elseif not IsActive(site) then
         return false
     end
-    return not GO().MatchesTemplate(site.desc, t)
+    return not GO.MatchesTemplate(site.desc, t)
 end
 
--- Apply the template to the given sites.
-local function ApplyTo(sites, t, anyState)
-    local g = GO()
-    local touched, refresh = {}, {}
-    for _, site in ipairs(sites) do
-        if Eligible(site, t, anyState) and g.ApplyTemplate(site.desc, t, anyState) then
-            -- Distinct refreshes run once after the loop (CDM bars share one rebuild).
-            if site.desc.onChange then refresh[site.desc.onChange] = true end
-            touched[site.module] = true
-        end
-    end
+-- One pass's refreshes: each distinct module refresh once (CDM bars share one
+-- rebuild), the touched modules' cached pages dropped, this page rebuilt.
+local function Settle(touched, refresh)
     for fn in pairs(refresh) do fn() end
     for module in pairs(touched) do
         EllesmereUI:InvalidateModulePageCache(module)
     end
+    EllesmereUI:RefreshPage(true)
+end
+
+-- Apply the template to sites[first..]. A site with its own confirm
+-- (desc.confirm: the prompt an edit of its style gets, such as a performance
+-- warning when a glow turns on) goes through it exactly as an edit would.
+-- When it prompts, the pass settles what it changed so far and stops;
+-- accepting resumes at that site (confirmed = its index: not asked twice),
+-- cancelling leaves it and the sites after it unchanged.
+local function ApplyRun(sites, t, anyState, first, confirmed)
+    local touched, refresh = {}, {}
+    for i = first, #sites do
+        local site = sites[i]
+        local desc = site.desc
+        if Eligible(site, t, anyState) then
+            local v = GO.TemplateValue(desc, t)
+            if v ~= nil and desc.confirm and i ~= confirmed then
+                local inCall, passed = true, false
+                desc.confirm(v, function()
+                    if inCall then passed = true
+                    else ApplyRun(sites, t, anyState, i, i) end
+                end)
+                inCall = false
+                if not passed then
+                    Settle(touched, refresh)
+                    return
+                end
+            end
+            if GO.ApplyTemplate(desc, t, anyState) then
+                if desc.onChange then refresh[desc.onChange] = true end
+                touched[site.module] = true
+            end
+        end
+    end
+    Settle(touched, refresh)
+end
+
+-- Apply the template to the given sites: sites without a prompt first, so a
+-- cancelled prompt holds back only the prompting sites after it.
+local function ApplyTo(sites, t, anyState)
+    local ordered = {}
+    for _, site in ipairs(sites) do
+        if not site.desc.confirm then ordered[#ordered + 1] = site end
+    end
+    for _, site in ipairs(sites) do
+        if site.desc.confirm then ordered[#ordered + 1] = site end
+    end
+    ApplyRun(ordered, t, anyState, 1)
 end
 
 -- Counts what ApplyTo would change, for the confirm popup.
 local function PreviewCounts(sites, t, anyState)
-    local g = GO()
     local n, conv, turnOn = 0, 0, 0
     for _, site in ipairs(sites) do
         if Eligible(site, t, anyState) then
             n = n + 1
-            if not site.desc.paramsOnly then
-                local _, c = g.Resolve(site.desc, t.style or 1)
-                if c then conv = conv + 1 end
-                if not g.IsCustomGlow(site.desc) then turnOn = turnOn + 1 end
-            end
+            local _, c = GO.TemplateValue(site.desc, t)
+            if c then conv = conv + 1 end
+            if not GO.IsCustomGlow(site.desc) then turnOn = turnOn + 1 end
         end
     end
     return n, conv, turnOn
@@ -208,16 +286,15 @@ local function ConfirmApply(sites, anyState)
     local t = Template()
     local n, conv, turnOn = PreviewCounts(sites, t, anyState)
     if n == 0 then
-        EllesmereUI:ShowConfirmPopup({
-            title = "Apply Glow Template",
-            message = anyState and "Nothing to change: every glow here already matches the template."
-                or "Nothing to change: no active custom glow differs from the template.",
-            confirmText = "OK",
+        EllesmereUI:ShowInfoPopup({
+            title = EllesmereUI.L("Apply Glow Template"),
+            content = anyState and EllesmereUI.L("Nothing to change: every glow here already matches the template.")
+                or EllesmereUI.L("Nothing to change: no active custom glow differs from the template."),
         })
         return
     end
     local msg = anyState and EllesmereUI.Lf("Apply the template to %d glow(s)?", n)
-        or EllesmereUI.Lf("Apply the template to %d active glow(s)?", n)
+        or EllesmereUI.Lf("Apply the template to the %d active custom glow(s) listed here?", n)
     if turnOn > 0 then
         msg = msg .. "\n\n" .. EllesmereUI.Lf("%d of them are off or use a Blizzard style and switch to the template glow.", turnOn)
     end
@@ -225,14 +302,11 @@ local function ConfirmApply(sites, anyState)
         msg = msg .. "\n\n" .. EllesmereUI.Lf("%d of them can't show the chosen style and use the closest one.", conv)
     end
     EllesmereUI:ShowConfirmPopup({
-        title       = "Apply Glow Template",
+        title       = EllesmereUI.L("Apply Glow Template"),
         message     = msg,
-        confirmText = "Apply",
-        cancelText  = "Cancel",
-        onConfirm   = function()
-            ApplyTo(sites, t, anyState)
-            EllesmereUI:RefreshPage(true)
-        end,
+        confirmText = EllesmereUI.L("Apply"),
+        cancelText  = EllesmereUI.L("Cancel"),
+        onConfirm   = function() ApplyTo(sites, t, anyState) end,
     })
 end
 
@@ -240,30 +314,16 @@ end
 --  Rows
 -------------------------------------------------------------------------------
 
--- Grey an InlineButton out (no click) with the reason as its tooltip, or
--- release it again (tip nil).
-local function SetBlocked(btn, tip)
-    btn._blockedTip = tip
-    if tip then btn:Disable() else btn:Enable() end
-    btn:SetAlpha(tip and 0.35 or 1)
-end
-
--- Small styled button chained left in a DualRow half.
-local function InlineButton(rgn, text, width, onClick)
-    local PP = EllesmereUI.PanelPP
-    local btn = CreateFrame("Button", nil, rgn)
-    PP.Size(btn, width, 24)
-    PP.Point(btn, "RIGHT", rgn._lastInline or rgn, rgn._lastInline and "LEFT" or "RIGHT", rgn._lastInline and -8 or -20, 0)
-    btn:SetFrameLevel(rgn:GetFrameLevel() + 5)
-    EllesmereUI.MakeStyledButton(btn, text, 11, EllesmereUI.WB_COLOURS, onClick)
-    btn:HookScript("OnEnter", function(self)
-        if self._blockedTip then EllesmereUI.ShowWidgetTooltip(self, EllesmereUI.L(self._blockedTip)) end
-    end)
-    btn:HookScript("OnLeave", function(self)
-        if self._blockedTip then EllesmereUI.HideWidgetTooltip() end
-    end)
-    rgn._lastInline = btn
-    return btn
+-- A DualRow kept out of the search index: view controls and live counts are
+-- no search results (a count would also go stale there). The flag is restored
+-- even when the row errors.
+local function UnindexedDualRow(W, parent, y, left, right)
+    local prev = EllesmereUI._searchIndexSuppress
+    EllesmereUI._searchIndexSuppress = true
+    local ok, row, h = pcall(W.DualRow, W, parent, y, left, right)
+    EllesmereUI._searchIndexSuppress = prev
+    if not ok then error(row, 0) end
+    return row, h
 end
 
 -- Round status dot left of a label half's text (the core's circle-mask dot).
@@ -294,9 +354,20 @@ end
 -- the button only exists for the template. matches: an already computed
 -- MatchesTemplate result (nil = compute it here).
 local function ApplyBlockedTip(site, t, matches)
-    if not CanTake(site) then return "This glow is locked on its settings page." end
-    if matches == nil then matches = GO().MatchesTemplate(site.desc, t) end
-    if matches then return "Already matches the template." end
+    local desc = site.desc
+    if desc.paramsOnly then
+        return EllesmereUI.L("Per-icon glow settings: the template never changes them.")
+    end
+    if not CanTake(site) then
+        -- A style-only lock names its own reason (its colors stay editable).
+        if not Blocked(site) and not (desc.disabled and desc.disabled())
+            and desc.styleDisabled and desc.styleDisabled() then
+            return EllesmereUI.L(desc.styleDisabledTooltip)
+        end
+        return EllesmereUI.L("This glow is locked on its settings page.")
+    end
+    if matches == nil then matches = GO.MatchesTemplate(site.desc, t) end
+    if matches then return EllesmereUI.L("Already matches the template.") end
     return nil
 end
 
@@ -377,36 +448,45 @@ local function InfoGlyph(rgn, kind)
     PP.Point(lbl, "LEFT", holder, "RIGHT", 8, 0)
 end
 
--- One info entry: label (hint as tooltip), its count, Go to Settings.
+-- One info entry: label (hint as tooltip), its count, Go to Settings. The
+-- count is written after the build: a count is no search result.
 local function InfoRow(parent, y, W, item)
     local info = item.info
-    local text = info.text and info.text() or ""
     local row, h = W:DualRow(parent, y, { type = "label", text = item.label, tooltip = info.tooltip },
-        { type = "label", text = text })
-    if not EllesmereUI._prebuilding then InfoGlyph(row._leftRegion, info.glyph) end
-    local nav, module = item.nav, item.module
-    if not EllesmereUI._prebuilding and nav and nav.page then
-        InlineButton(row._rightRegion, "Go to Settings", 110, function()
-            EllesmereUI:NavigateToElementSettings(module, nav.page, nav.section, nav.preSelect, nav.highlight)
-        end)
+        EllesmereUI.BlankRowCfg())
+    if not EllesmereUI._prebuilding then
+        local rrgn = row._rightRegion
+        if info.text and rrgn._label then rrgn._label:SetText(info.text()) end
+        InfoGlyph(row._leftRegion, info.glyph)
+        local nav, module = item.nav, item.module
+        if nav and nav.page then
+            EllesmereUI.BuildInlineButton(rrgn, EllesmereUI.L("Go to Settings"), function()
+                EllesmereUI:NavigateToElementSettings(module, nav.page, nav.section, nav.preSelect, nav.highlight)
+            end)
+        end
     end
     return y - h
 end
 
--- One site: its own glow controls on the left, status + Apply + Open Settings right.
+-- One site: its own glow controls on the left, status + Apply + Open Settings
+-- right. The status word is written after the build (no search result); its
+-- tooltip rides the empty label from the start.
 local function SiteRow(parent, y, W, site)
-    local g = GO()
     local desc = site.desc
     local left
     if desc.paramsOnly then
         left = { type = "label", text = site.label }
     else
-        left = g.DropdownSpec(desc, site.label)
+        left = GO.DropdownSpec(desc, site.label)
     end
-    local color, short, long, matches = SiteStatus(site, Template())
-    local row, h = W:DualRow(parent, y, left, { type = "label", text = short, tooltip = long })
+    local color, short, long = SiteStatus(site, Template())
+    local statusCfg = EllesmereUI.BlankRowCfg()
+    statusCfg.tooltip = long
+    local row, h = W:DualRow(parent, y, left, statusCfg)
     if not EllesmereUI._prebuilding then
-        local dotTex = StatusDot(row._rightRegion, color)
+        local rrgn = row._rightRegion
+        if rrgn._label then rrgn._label:SetText(short) end
+        local dotTex = StatusDot(rrgn, color)
         local lrgn = row._leftRegion
         if desc.paramsOnly then
             -- A label half has no control to chain from: anchor the cog at the right edge.
@@ -415,30 +495,30 @@ local function SiteRow(parent, y, W, site)
             PP.Size(anchor, 1, 1)
             PP.Point(anchor, "RIGHT", lrgn, "RIGHT", -20, 0)
             lrgn._lastInline = anchor
-            EllesmereUI.BuildInlineCog(lrgn, { title = "Pixel Glow Settings", rows = g.CogRows(desc), captureRegion = lrgn })
+            EllesmereUI.BuildInlineCog(lrgn, { title = "Pixel Glow Settings", rows = GO.CogRows(desc), captureRegion = lrgn })
         else
-            g.AttachInline(lrgn, desc)
+            GO.AttachInline(lrgn, desc)
         end
-        local rrgn = row._rightRegion
         local nav, module = site.nav, site.module
         if nav and nav.page then
-            InlineButton(rrgn, "Open Settings", 104, function()
+            EllesmereUI.BuildInlineButton(rrgn, EllesmereUI.L("Open Settings"), function()
                 EllesmereUI:NavigateToElementSettings(module, nav.page, nav.section, nav.preSelect, nav.highlight)
-            end)
+            end, { width = 104 })
         end
-        local applyBtn = InlineButton(rrgn, "Apply Template", 110, function() ConfirmApply({ site }, true) end)
-        -- Row edits only refresh widgets (no rebuild): keep status and button current.
-        local function RefreshState()
-            local t = Template()
-            local c, s, l, m = SiteStatus(site, t)
+        EllesmereUI.BuildInlineButton(rrgn, EllesmereUI.L("Apply Template"), function() ConfirmApply({ site }, true) end, {
+            width = 110,
+            disabled = function() return ApplyBlockedTip(site, Template()) ~= nil end,
+            disabledTooltip = function() return ApplyBlockedTip(site, Template()) end,
+            rawTooltip = true,
+        })
+        -- Row edits only refresh widgets (no rebuild): keep the status current.
+        EllesmereUI.RegisterWidgetRefresh(function()
+            local c, s, l = SiteStatus(site, Template())
             local lbl = rrgn._label
             if lbl then lbl:SetText(s); lbl:SetTextColor(c[1], c[2], c[3], 1) end
             if dotTex then dotTex:SetColorTexture(c[1], c[2], c[3], 1) end
             if rrgn._cfg then rrgn._cfg.tooltip = l end
-            SetBlocked(applyBtn, ApplyBlockedTip(site, t, m))
-        end
-        SetBlocked(applyBtn, ApplyBlockedTip(site, Template(), matches))
-        EllesmereUI.RegisterWidgetRefresh(RefreshState)
+        end)
     end
     return y - h
 end
@@ -450,77 +530,80 @@ local GL_GLYPH = "Interface\\AddOns\\EllesmereUI\\media\\textures\\melli.tga"
 
 -- Card header summary: active glows and how many differ from the template.
 local function CardSummary(list, t)
-    local g = GO()
     local active, differ = 0, 0
     for _, site in ipairs(list) do
         if IsActive(site) then
             active = active + 1
-            if not g.MatchesTemplate(site.desc, t) then differ = differ + 1 end
+            if not GO.MatchesTemplate(site.desc, t) then differ = differ + 1 end
         end
     end
     if active == 0 then return EllesmereUI.L("No active glows"), active end
     local tail
     if differ > 0 then
-        tail = EllesmereUI.Lf("%d differ from template", differ)
-        if not EllesmereUI._prebuilding then tail = "|cffe0b050" .. tail .. "|r" end
+        tail = AMBER_CODE .. EllesmereUI.Lf("%d differ from template", differ) .. "|r"
     else
         tail = EllesmereUI.L("all match the template")
     end
     return EllesmereUI.Lf("%d active", active) .. ", " .. tail, active
 end
 
+-- Is every site of the card already matching or locked (nothing for its Apply)?
+local function ModuleBlocked(tile)
+    local t = Template()
+    for _, site in ipairs(tile.sites) do
+        if not ApplyBlockedTip(site, t) then return false end
+    end
+    return true
+end
+
 -- Card body: a Hide Inactive toggle (off by default; greyed out when the card
 -- has nothing inactive) and the module's Apply, then the rows grouped under
--- their sub headings.
+-- their sub headings. A card of hint rows only has neither.
 local function BuildCardContent(parent, y, W, tile)
     local key = tile.key
     local showAll = _glHideInactive[key] ~= true
-    local inactive = #tile.sites - tile.active
-    local left = { type = "toggle", text = EllesmereUI.Lf("Hide Inactive Glows (%d)", inactive),
-        getValue = function() return _glHideInactive[key] == true end,
-        setValue = function(v)
-            _glHideInactive[key] = v or nil
-            EllesmereUI:RefreshPage(true)
-        end,
-        disabled = function() return inactive == 0 end,
-        disabledTooltip = "Every glow in this module is active.", rawTooltip = true }
-    local row, h = W:DualRow(parent, y, left, { type = "label", text = "" });  y = y - h
-    if not EllesmereUI._prebuilding then
-        local modBtn = InlineButton(row._rightRegion, "Apply Template to This Module", 220,
-            function() ConfirmApply(tile.sites, true) end)
-        -- A row edit can change the header summary, the inactive count and which
-        -- rows show. The summary text updates in place (a rebuild would close an
-        -- open cog popup); a changed active count moves rows, so rebuild once.
-        local function RefreshCardState()
-            local t = Template()
-            local summary, active = CardSummary(tile.sites, t)
-            if summary ~= tile.desc and active == tile.active then
-                local fs = tile._descFS
-                if not fs and tile._hdr then
-                    local shown = EllesmereUI.L(tile.desc or "")
-                    for _, r in ipairs({ tile._hdr:GetRegions() }) do
-                        if r.GetText and r:GetObjectType() == "FontString" and r:GetText() == shown then fs = r; break end
-                    end
-                    tile._descFS = fs
+    local hasSites = #tile.sites > 0
+    local row, h
+    if hasSites then
+        local inactive = #tile.sites - tile.active
+        local left = { type = "toggle", text = EllesmereUI.Lf("Hide Inactive Glows (%d)", inactive),
+            getValue = function() return _glHideInactive[key] == true end,
+            setValue = function(v)
+                _glHideInactive[key] = v or nil
+                EllesmereUI:RefreshPage(true)
+            end,
+            disabled = function() return inactive == 0 end,
+            disabledTooltip = EllesmereUI.L("Every glow in this module is active."), rawTooltip = true }
+        row, h = UnindexedDualRow(W, parent, y, left, EllesmereUI.BlankRowCfg());  y = y - h
+        if not EllesmereUI._prebuilding then
+            EllesmereUI.BuildInlineButton(row._rightRegion, EllesmereUI.L("Apply Template to This Module"),
+                function() ConfirmApply(tile.sites, true) end, {
+                    width = 220,
+                    disabled = function() return ModuleBlocked(tile) end,
+                    disabledTooltip = EllesmereUI.L("Every glow in this module already matches the template or is locked on its settings page."),
+                    rawTooltip = true,
+                })
+            -- A row edit can change the header summary, the inactive count and which
+            -- rows show. The summary text updates in place (a rebuild would close an
+            -- open cog popup); a changed active count moves rows, so rebuild once.
+            local function RefreshCardState()
+                local summary, active = CardSummary(tile.sites, Template())
+                if summary ~= tile.desc and active == tile.active then
+                    if tile._descFS then tile._descFS:SetText(summary) end
+                    tile.desc = summary
                 end
-                if fs then fs:SetText(EllesmereUI.L(summary)); tile.desc = summary end
+                if (summary ~= tile.desc or active ~= tile.active) and not _glRebuildQueued then
+                    _glRebuildQueued = true
+                    C_Timer.After(0, function()
+                        _glRebuildQueued = false
+                        if EllesmereUI:GetActivePage() == PAGE_GLOWS then EllesmereUI:RefreshPage(true) end
+                    end)
+                end
             end
-            if (summary ~= tile.desc or active ~= tile.active) and not _glRebuildQueued then
-                _glRebuildQueued = true
-                C_Timer.After(0, function()
-                    _glRebuildQueued = false
-                    if EllesmereUI:GetActivePage() == "Glows" then EllesmereUI:RefreshPage(true) end
-                end)
-            end
-            for _, site in ipairs(tile.sites) do
-                if not ApplyBlockedTip(site, t) then SetBlocked(modBtn, nil); return end
-            end
-            SetBlocked(modBtn, "Every glow in this module already matches the template or is locked on its settings page.")
+            EllesmereUI.RegisterWidgetRefresh(RefreshCardState)
         end
-        RefreshCardState()
-        EllesmereUI.RegisterWidgetRefresh(RefreshCardState)
+        y = CardDivider(parent, y)
     end
-    y = CardDivider(parent, y)
     local lastSub
     -- Info entries lead the card (above any group) and never hide.
     for _, item in ipairs(tile.infos) do
@@ -537,10 +620,10 @@ local function BuildCardContent(parent, y, W, tile)
             shown = shown + 1
         end
     end
-    if shown == 0 then
-        row, h = W:DualRow(parent, y,
-            { type = "label", text = "No active glows. Turn off Hide Inactive Glows to edit the others." },
-            { type = "label", text = "" });  y = y - h
+    if hasSites and shown == 0 then
+        row, h = UnindexedDualRow(W, parent, y,
+            { type = "label", text = EllesmereUI.L("No active glows. Turn off Hide Inactive Glows to edit the others.") },
+            EllesmereUI.BlankRowCfg());  y = y - h
     end
     return y
 end
@@ -558,12 +641,17 @@ local function BuildTileList(sites, infos)
         if not list then list = {}; infosByModule[item.module] = list end
         list[#list + 1] = item
     end
-    for _, entry in ipairs(EllesmereUI.ADDON_ROSTER or {}) do
+    for _, entry in ipairs(EllesmereUI.ADDON_ROSTER) do
         local list = byModule[entry.folder]
         local infoList = infosByModule[entry.folder]
         if (list or infoList) and not entry.comingSoon then
             list = list or {}
-            local summary, active = CardSummary(list, t)
+            local summary, active
+            if #list > 0 then
+                summary, active = CardSummary(list, t)
+            else
+                summary, active = EllesmereUI.L("Glows set per entry, which the template never changes"), 0
+            end
             tiles[#tiles + 1] = {
                 key = entry.folder, folder = entry.folder, display = entry.display,
                 desc = summary, active = active,
@@ -580,9 +668,9 @@ local function BuildGlowCard(parent, y, W, tile)
         -- Sites register only from loaded modules' option files.
         enabled = true,
         expanded = _glExpanded, descW = 560,
+        -- The summary is live (counts): search indexes a fixed word instead.
+        searchDesc = "Glows",
         glyph = function(hdr, enabled)
-            -- Kept for the in-place summary update (RefreshCardState).
-            tile._hdr = hdr
             local PP = EllesmereUI.PanelPP
             local EG = EllesmereUI.ELLESMERE_GREEN
             local glyph = CreateFrame("Frame", nil, hdr)
@@ -604,41 +692,40 @@ end
 function _G._EUI_BuildGlowsPage(pageName, parent, yOffset)
     local W = EllesmereUI.Widgets
     local PP = EllesmereUI.PanelPP
-    local g = GO()
     local y = yOffset
     local _, h
-    if not (W and g) then return 0 end
 
     parent._showRowDivider = true
 
     local introHost = CreateFrame("Frame", nil, parent)
-    PP.Size(introHost, parent:GetWidth() - EllesmereUI.CONTENT_PAD * 2, 44)
+    PP.Size(introHost, parent:GetWidth() - EllesmereUI.CONTENT_PAD * 2, 62)
     PP.Point(introHost, "TOPLEFT", parent, "TOPLEFT", EllesmereUI.CONTENT_PAD, y - 20)
     local intro = EllesmereUI.MakeFont(introHost, 14, nil, 1, 1, 1, 0.65)
     PP.Point(intro, "TOPLEFT", introHost, "TOPLEFT", 0, -2)
     PP.Point(intro, "TOPRIGHT", introHost, "TOPRIGHT", 0, -2)
     intro:SetJustifyH("CENTER")
     intro:SetWordWrap(true)
-    intro:SetText(EllesmereUI.L("Set a glow once. Apply to All changes every active custom glow.") .. "\n"
-        .. EllesmereUI.L("Module and row buttons also replace off glows, Blizzard Default, Blizzard Border and Solid Border."))
-    y = y - 48
+    intro:SetText(EllesmereUI.L("Set a glow once. Apply to All changes the active custom glows listed below.") .. "\n"
+        .. EllesmereUI.L("Module and row buttons also replace off glows, Blizzard Default, Blizzard Border and Solid Border.") .. "\n"
+        .. EllesmereUI.L("Glows set per icon, indicator or filter keep their own settings."))
+    y = y - 66
 
     -- Template
     _, h = W:SectionHeader(parent, "GLOW TEMPLATE", y);  y = y - h
     local tpl = TemplateDesc()
     local sites = CollectSites()
     local tplRow
-    tplRow, h = W:DualRow(parent, y, g.DropdownSpec(tpl, "Glow Style"),
-        { type = "label", text = "" });  y = y - h
+    tplRow, h = W:DualRow(parent, y, GO.DropdownSpec(tpl, "Glow Style"), EllesmereUI.BlankRowCfg());  y = y - h
     if not EllesmereUI._prebuilding then
         local lrgn = tplRow._leftRegion
-        g.AttachInline(lrgn, tpl)
-        local pv = g.BuildPreview(lrgn, tpl, { anchor = lrgn._lastInline, x = -12 })
+        GO.AttachInline(lrgn, tpl)
+        local pv = GO.BuildPreview(lrgn, tpl, { anchor = lrgn._lastInline, x = -12 })
         if pv then
             pv:SetFrameLevel(lrgn:GetFrameLevel() + 5)
             lrgn._lastInline = pv
         end
-        InlineButton(tplRow._rightRegion, "Apply to All Active Glows", 190, function() ConfirmApply(sites) end)
+        EllesmereUI.BuildInlineButton(tplRow._rightRegion, EllesmereUI.L("Apply to All Active Glows"),
+            function() ConfirmApply(sites) end, { width = 190 })
     end
 
     _, h = W:Spacer(parent, y, 20);  y = y - h
@@ -650,4 +737,25 @@ function _G._EUI_BuildGlowsPage(pageName, parent, yOffset)
     end
 
     return math.abs(y)
+end
+
+-------------------------------------------------------------------------------
+--  Deep-link pre-hook: a jump into this page (a search result) opens every
+--  card and shows every row first, so the target row exists when the jump
+--  looks for it (the Fonts and Textures pages do the same).
+-------------------------------------------------------------------------------
+do
+    local origNav = EllesmereUI.NavigateToElementSettings
+    function EllesmereUI:NavigateToElementSettings(moduleName, pageName, sectionName, preSelectFn, highlightText)
+        if moduleName == GLOBAL_KEY and pageName == PAGE_GLOWS and (sectionName or highlightText) then
+            local changed = false
+            for _, entry in ipairs(GO.sites) do
+                local k = entry.module
+                if k and not _glExpanded[k] then _glExpanded[k] = true; changed = true end
+            end
+            if next(_glHideInactive) then wipe(_glHideInactive); changed = true end
+            if changed then EllesmereUI:InvalidatePageCache() end
+        end
+        return origNav(self, moduleName, pageName, sectionName, preSelectFn, highlightText)
+    end
 end

@@ -68,6 +68,19 @@ initFrame:SetScript("OnEvent", function(self)
     local TYPE_LABEL = {}
     for _, t in ipairs(ns.BLOCK_TYPES) do TYPE_LABEL[t.key] = t.label end
 
+    -- A saved block whose type registers no factory on WoW Forever (crests,
+    -- spec, great vault) shows only its empty slot there. The live bar
+    -- measures it at zero, so it collapses out of the solve, except in a role:
+    -- as the bar's Fill Remaining block it still takes the leftover span, and
+    -- as its Force Centered block it still splits the bar at the center (the
+    -- toggles on any shown block move either role). The page mirrors the live
+    -- bar: no preview segment and no settings section. The entry stays in the
+    -- bar's saved list untouched, so the profile still carries it back to
+    -- retail.
+    local function BlockHidden(b)
+        return EllesmereUI.IS_FOREVER and not ns.BlockFactories[b.type]
+    end
+
     -- Typical content extents (real-bar px) for auto-fit blocks that have no
     -- live instance yet; the preview scales these into strip space.
     local EST_LEN = {
@@ -699,8 +712,14 @@ initFrame:SetScript("OnEvent", function(self)
         local stripUsable = stripLen - SEDGE * 2
         local blocks = cfg.blocks
         local nBlocks = #blocks
+        -- Hidden blocks keep their index in every per-segment array below (the
+        -- reorder commit works in the bar's own order) but draw nothing.
+        local nShown = nBlocks
+        for i = 1, nBlocks do
+            if BlockHidden(blocks[i]) then nShown = nShown - 1 end
+        end
 
-        if nBlocks == 0 then
+        if nShown == 0 then
             local hintFS = EllesmereUI.MakeFont(strip, 11, nil, 1, 1, 1, 0.4)
             hintFS:SetPoint("CENTER", strip, "CENTER", 0, 0)
             if vertical then
@@ -772,6 +791,7 @@ initFrame:SetScript("OnEvent", function(self)
 
             segBtns[i] = btn
             shareFSs[i] = shareFS
+            if BlockHidden(b) then btn:Hide() end
         end
 
         -- Hovering a block's settings section washes its preview segment.
@@ -841,6 +861,8 @@ initFrame:SetScript("OnEvent", function(self)
             if barUsable < 1 then barUsable = 1 end
             local scale = stripUsable / barUsable
             local function measure(bc)
+                -- Zero, as the live bar measures a block with no instance.
+                if BlockHidden(bc) then return 0 end
                 local w = ns.GetLiveAutoLength(cfg.id, bc.id)
                 if not w or w <= 0 then w = EST_LEN[bc.type] or 80 end
                 return w
@@ -856,7 +878,14 @@ initFrame:SetScript("OnEvent", function(self)
                 local rAt = seg.at or 0
                 local a = floor(rAt * scale + 0.5)
                 local e = floor((rAt + seg.px) * scale + 0.5)
-                local nxt = segs[i + 1]
+                -- Seam lines run between shown segments only: a hidden one
+                -- draws none and is skipped as a neighbor.
+                local nxt
+                if not BlockHidden(seg.block) then
+                    local k = i + 1
+                    while segs[k] and BlockHidden(segs[k].block) do k = k + 1 end
+                    nxt = segs[k]
+                end
                 if nxt then
                     local d = (nxt.at or 0) - (rAt + seg.px)
                     seg._touch = d > -0.75 and d < 0.75
@@ -1084,11 +1113,24 @@ initFrame:SetScript("OnEvent", function(self)
             return n + 1
         end
 
+        -- A drop is a no-op when only hidden segments (see BlockHidden) lie
+        -- between the target boundary and the dragged segment: the move
+        -- would change nothing on screen and only shift a hidden entry.
+        local function IsNoopDrop(from, to)
+            if to == from or to == from + 1 then return true end
+            local lo, hi = to, from - 1
+            if to > from then lo, hi = from + 1, to - 1 end
+            for k = lo, hi do
+                if not BlockHidden(blocks[k]) then return false end
+            end
+            return true
+        end
+
         local function UpdateDragVisuals()
             if not dragIdx or not lastSegs then return end
             local targetIdx = ComputeInsertIdx()
             -- Boundaries adjoining the dragged segment are a no-op drop.
-            local noop = (targetIdx == dragIdx or targetIdx == dragIdx + 1)
+            local noop = IsNoopDrop(dragIdx, targetIdx)
             for k = 1, #segBtns do
                 if k == dragIdx or noop then
                     segBtns[k]._tgtOff = 0
@@ -1161,7 +1203,7 @@ initFrame:SetScript("OnEvent", function(self)
             for k = 1, #segBtns do segBtns[k]._tgtOff = 0 end
             local targetIdx = ComputeInsertIdx()
             if not (from and targetIdx) then return end
-            if targetIdx == from or targetIdx == from + 1 then return end
+            if IsNoopDrop(from, targetIdx) then return end
             ns.MoveBlockTo(cfg.id, blocks[from].id, targetIdx)
             -- Full refresh: the preview strip lives in the content header,
             -- which a plain RefreshPage never rebuilds.
@@ -1981,6 +2023,15 @@ initFrame:SetScript("OnEvent", function(self)
         --  One section per block
         -------------------------------------------------------------------
         local blocks = cfg.blocks
+        if EllesmereUI.IS_FOREVER then
+            -- Hidden blocks get no section (see BlockHidden); the rest keep
+            -- bar order.
+            local shown = {}
+            for i = 1, #blocks do
+                if not BlockHidden(blocks[i]) then shown[#shown + 1] = blocks[i] end
+            end
+            blocks = shown
+        end
         local blockHoverRegions = {}   -- { id, rgn } Width % control regions
         for i = 1, #blocks do
             local b = blocks[i]
@@ -2443,6 +2494,10 @@ initFrame:SetScript("OnEvent", function(self)
             -- Deliberately absent: crests. Its icons are inline |T|t escapes
             -- inside one FontString, which cannot be vertex-tinted (see the
             -- note by ICON_DEFAULTS in Blocks\Shared.lua).
+            -- WoW Forever has no Mythic+ teleports, so the travel block builds
+            -- no Show M+ Portals toggle there: its Icon Color row is handed to
+            -- the type rows instead, where it pairs with Left Click.
+            local travelIconCfg
             local ICON_COLOR_BLOCKS = {
                 durability = true, gold = true, travel = true, spec = true,
                 profession = true, profession2 = true, currency = true,
@@ -2561,7 +2616,7 @@ initFrame:SetScript("OnEvent", function(self)
                 -- Gold / travel: a type row rides the Icon Color row's
                 -- otherwise-empty right slot instead of trailing alone below.
                 local iconRowRight = { type = "label", text = "" }
-                if b.type == "travel" then
+                if b.type == "travel" and not EllesmereUI.IS_FOREVER then
                     -- Default ON (nil = shown), so this can't use MkToggle's
                     -- `== true` read.
                     iconRowRight = { type = "toggle", text = "Show M+ Portals",
@@ -2648,8 +2703,12 @@ initFrame:SetScript("OnEvent", function(self)
                           Apply()
                       end }
                 end
-                _, h = W:DualRow(parent, y,
-                    iconColorCfg, iconRowRight);  y = y - h
+                if b.type == "travel" and EllesmereUI.IS_FOREVER then
+                    travelIconCfg = iconColorCfg
+                else
+                    _, h = W:DualRow(parent, y,
+                        iconColorCfg, iconRowRight);  y = y - h
+                end
             end
 
             -- Type-specific rows (sequential DualRow fill; odd tail gets a
@@ -2922,6 +2981,7 @@ initFrame:SetScript("OnEvent", function(self)
                           Apply()
                       end },
                 }
+                if travelIconCfg then table.insert(typeRows, 1, travelIconCfg) end
             elseif b.type == "micromenu" then
                 -- Align Content returns here as a type row (its shared-row
                 -- slot hosts the Enable Text toggle instead): anchors the

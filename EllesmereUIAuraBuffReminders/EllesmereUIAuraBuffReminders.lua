@@ -605,6 +605,34 @@ local function _unitHasBuff(u, spellIDs)
     return false
 end
 
+-- Strict ownership of one aura: true = the player cast it, false = someone else
+-- did, nil = cannot tell (the caller suppresses rather than false-fires).
+-- isFromPlayerOrPlayerPet is true for ANY player's (or player pet's) cast, so it
+-- only rules an aura out (false = an NPC applied it); sourceUnit proves it.
+function EABR._StrictAuraFromMe(aura)
+    local fromPlayer = aura.isFromPlayerOrPlayerPet
+    if not isSecret(fromPlayer) and fromPlayer == false then return false end
+    local src = aura.sourceUnit
+    if src == nil or isSecret(src) then return nil end
+    return UnitIsUnit(src, "player") == true
+end
+
+-- Whether the player's OWN cast of `id` is on `unit`, for the in-combat cache
+-- updates where sourceUnit is secret: the PLAYER filter returns only auras the
+-- player applied, so another caster's copy never counts. Presence only.
+function EABR._OwnCastOn(unit, id)
+    local names = EABR._ownCastNames
+    if not names then names = {}; EABR._ownCastNames = names end
+    local name = names[id]
+    if name == nil then
+        name = C_Spell.GetSpellName(id) or false
+        names[id] = name
+    end
+    if not name then return false end
+    local ok, aura = pcall(C_UnitAuras.GetAuraDataBySpellName, unit, name, "HELPFUL|PLAYER")
+    return ok and aura ~= nil and not isSecret(aura)
+end
+
 -- True if the buff's source is the player. Non-player units: OOC iteration only, false in combat (caller uses the snapshot).
 local function _unitHasBuffFromPlayer(u, spellIDs, strictSource)
     local inCombat = InCombat()
@@ -620,21 +648,16 @@ local function _unitHasBuffFromPlayer(u, spellIDs, strictSource)
                 local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
                 if strictSource and (not ok or isSecret(aura)) then return nil end
                 if ok and aura ~= nil and not isSecret(aura) then
-                    local fromMe = aura.isFromPlayerOrPlayerPet
-                    if strictSource then
-                        if isSecret(fromMe) then return nil end
-                        if fromMe ~= nil then return fromMe == true end
-                        local src = aura.sourceUnit
-                        if isSecret(src) or src == nil then return nil end
-                        return UnitIsUnit(src, "player") == true
-                    elseif fromMe and not isSecret(fromMe) and fromMe == true then
-                        return true
-                    end
+                    if strictSource then return EABR._StrictAuraFromMe(aura) end
                     local src = aura.sourceUnit
-                    if src and not isSecret(src) and UnitIsUnit(src, "player") then
-                        return true
+                    if src and not isSecret(src) then
+                        if UnitIsUnit(src, "player") then return true end
+                    else
+                        -- Source unreadable: a player's cast is assumed ours (the
+                        -- flag alone cannot tell whose).
+                        local fromMe = aura.isFromPlayerOrPlayerPet
+                        if not isSecret(fromMe) and fromMe == true then return true end
                     end
-                    if strictSource and (not src or isSecret(src)) then return nil end
                 end
             end
         end
@@ -647,19 +670,9 @@ local function _unitHasBuffFromPlayer(u, spellIDs, strictSource)
                 if not aura then break end
                 local sid = aura.spellId
                 if sid and not isSecret(sid) and idLookup[sid] then
-                    local fromMe = aura.isFromPlayerOrPlayerPet
-                    if strictSource then
-                        if isSecret(fromMe) then return nil end
-                        if fromMe ~= nil then return fromMe == true end
-                        local src = aura.sourceUnit
-                        if isSecret(src) or src == nil then return nil end
-                        return UnitIsUnit(src, "player") == true
-                    end
                     local src = aura.sourceUnit
                     if src and not isSecret(src) and UnitIsUnit(src, "player") then
                         return true
-                    elseif strictSource and (not src or isSecret(src)) then
-                        return nil
                     end
                 end
             end
@@ -675,14 +688,7 @@ local function _unitHasBuffFromPlayer(u, spellIDs, strictSource)
             local ok, aura = pcall(C_UnitAuras.GetUnitAuraBySpellID, u, id)
             if strictSource and (not ok or isSecret(aura)) then return nil end
             if ok and aura and not isSecret(aura) then
-                local fromMe = aura.isFromPlayerOrPlayerPet
-                if strictSource then
-                    if isSecret(fromMe) then return nil end
-                    if fromMe ~= nil then return fromMe == true end
-                    local src = aura.sourceUnit
-                    if isSecret(src) or src == nil then return nil end
-                    return UnitIsUnit(src, "player") == true
-                end
+                if strictSource then return EABR._StrictAuraFromMe(aura) end
                 local src = aura.sourceUnit
                 if src and not isSecret(src) then
                     if UnitIsUnit(src, "player") then return true end
@@ -704,14 +710,7 @@ local function _unitHasBuffFromPlayer(u, spellIDs, strictSource)
         if not aura then break end
         local sid = aura.spellId
         if sid and not isSecret(sid) and idLookup[sid] then
-            local fromMe = aura.isFromPlayerOrPlayerPet
-            if strictSource then
-                if isSecret(fromMe) then return nil end
-                if fromMe ~= nil then return fromMe == true end
-                local src = aura.sourceUnit
-                if isSecret(src) or src == nil then return nil end
-                return UnitIsUnit(src, "player") == true
-            end
+            if strictSource then return EABR._StrictAuraFromMe(aura) end
             local src = aura.sourceUnit
             if src and not isSecret(src) then
                 if UnitIsUnit(src, "player") then return true end
@@ -5342,8 +5341,7 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
             local isEvoker = _cachedPlayerClass == "EVOKER"
             if isEvoker and InCombat() and IsInGroup() then
                 for _, id in ipairs(_ownOnRaidIDs) do
-                    local ok, result = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
-                    if ok and result ~= nil and not isSecret(result) then
+                    if EABR._OwnCastOn("player", id) then
                         _preCombatOwnOnRaidCache[id] = true
                     end
                 end
@@ -5355,11 +5353,8 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
             if c == 112 or c == 114 then  -- 'p' or 'r'
                 if _isEvokerOwnOnRaid and InCombat() and IsInGroup() then
                     for _, id in ipairs(_ownOnRaidIDs) do
-                        if not _preCombatOwnOnRaidCache[id] then
-                            local ok, result = pcall(C_UnitAuras.GetUnitAuraBySpellID, arg1, id)
-                            if ok and result ~= nil and not isSecret(result) then
-                                _preCombatOwnOnRaidCache[id] = true
-                            end
+                        if not _preCombatOwnOnRaidCache[id] and EABR._OwnCastOn(arg1, id) then
+                            _preCombatOwnOnRaidCache[id] = true
                         end
                     end
                 end
