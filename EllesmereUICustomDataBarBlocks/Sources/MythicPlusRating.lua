@@ -36,7 +36,7 @@ local max                 = math.max
 local ITEM_QUALITY_COLORS = ITEM_QUALITY_COLORS
 
 local CONTENT_BASE = K.CONTENT_BASE
-local InstKey = K.InstKey
+local SCORE_FONT_SIZE = max(9, floor(CONTENT_BASE * 0.4333 + 0.5))
 local MakeEventFrame = K.MakeEventFrame
 local RegisterInstEvents = K.RegisterInstEvents
 local UnregisterInstEvents = K.UnregisterInstEvents
@@ -219,9 +219,8 @@ local function GetSpellCooldownRemaining(spellID)
     return max(0, startTime + duration - GetTime())
 end
 
-local function ShowMythicPlusTooltip(button)
+local function ShowMythicPlusTooltip(button, score)
     -- Compose the tooltip with DataBars' helpers so this extension uses the shared tooltip frame.
-    local score = GetScore()
     local title = L("Mythic+ Rating") .. ": "
     if score then
         title = title .. "|cff" .. GetColorHex(GetScoreColor(score)) .. tostring(score) .. "|r"
@@ -358,7 +357,6 @@ end
 
 DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(blockCfg, slot, content, barCtx)
     local inst = { cfg = blockCfg, slot = slot, content = content, ctx = barCtx }
-    inst.key = InstKey(barCtx, blockCfg)
     inst.events = {
         "PLAYER_ENTERING_WORLD",
         "CHALLENGE_MODE_COMPLETED",
@@ -380,9 +378,8 @@ DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(bloc
         local score = GetScore()
         local text = score and tostring(score) or "-"
         local barCfg = barCtx.cfg
-        local fontSize = max(9, floor(CONTENT_BASE * 0.4333 + 0.5))
 
-        ns.SetFont(scoreText, fontSize, barCfg)
+        ns.SetFont(scoreText, SCORE_FONT_SIZE, barCfg)
         scoreText:SetText(text)
         scoreText:ClearAllPoints()
 
@@ -411,12 +408,13 @@ DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(bloc
         end
         scoreText:SetTextColor(red, green, blue, 1)
         MaybeRelayout(self)
+        return score
     end
 
     button:SetScript("OnEnter", function()
         mouseOver = true
-        inst:Refresh()
-        ShowMythicPlusTooltip(button)
+        local score = inst:Refresh()
+        ShowMythicPlusTooltip(button, score)
     end)
     button:SetScript("OnLeave", function()
         mouseOver = false
@@ -431,10 +429,10 @@ DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(bloc
         end
     end)
 
-    inst.eventFrame = MakeEventFrame(inst, function(self, event)
+    inst.eventFrame = MakeEventFrame(inst, function(self)
         if self._dead then return end
-        self:Refresh()
-        if ns.Tip_IsOwned(button) then ShowMythicPlusTooltip(button) end
+        local score = self:Refresh()
+        if ns.Tip_IsOwned(button) then ShowMythicPlusTooltip(button, score) end
     end)
 
     function inst:Enable()
