@@ -11,4 +11,4 @@
 
 EllesmereUIDataBarsCustomBlocks.lua
 DataBarsExtensions.lua
-Sources\MythicPlusRating.lua
+Blocks\MythicPlusRating.lua
