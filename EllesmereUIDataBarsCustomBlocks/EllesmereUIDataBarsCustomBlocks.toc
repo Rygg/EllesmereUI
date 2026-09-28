@@ -1,5 +1,5 @@
 ## Interface: 120000, 120001, 120005, 120007, 120100, 16001
-## Title: |cff0cd29fEllesmereUI|r Custom Data Bar Blocks
+## Title: |cff0cd29fEllesmereUI|r DataBars Custom Blocks
 ## Category: |cff0cd29fEllesmere|rUI
 ## Notes: Separately updateable custom DataBars blocks.
 ## Group: EllesmereUI
@@ -9,6 +9,6 @@
 ## Dependencies: EllesmereUI, EllesmereUIDataBars
 ## IconTexture: Interface\AddOns\EllesmereUI\media\eg-logo.tga
 
-EllesmereUICustomDataBarBlocks.lua
-Sources\DataBarsExtensions.lua
+EllesmereUIDataBarsCustomBlocks.lua
+DataBarsExtensions.lua
 Sources\MythicPlusRating.lua
