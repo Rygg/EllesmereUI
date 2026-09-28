@@ -8,7 +8,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  + _childupdate-eab-page with explicit action attrs.
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 local EAB = EllesmereUI.Lite.NewAddon(ADDON_NAME)
 ns.EAB = EAB
@@ -36,6 +36,11 @@ do
         return CreateFrame("Frame")
     end
 end
+
+-- "Run once after combat" for every combat-gated deferral in this file. The shell is
+-- taken in the main chunk, so drained work bills ActionBars. Keys are per purpose, and
+-- sites that defer the same work share a key (e.g. "UpdateKeybinds").
+ns.CombatQueue = EllesmereUI.NewCombatQueue(ns.TakeShell())
 
 -- "Hide Count at 0" (Icon Effects): hide a zero charge/stack count via the
 -- count fontstring's ALPHA, never its text -- text is co-owned: Blizzard's
@@ -3769,7 +3774,7 @@ do
         if _G._EAB_UpdateKeybinds then _G._EAB_UpdateKeybinds() end
     end
 
-    -- Deferral shell for that reroute. ACTIONBAR_SLOT_CHANGED fires freely IN
+    -- Deferral for that reroute. ACTIONBAR_SLOT_CHANGED fires freely IN
     -- combat (a page swap fires 12+), but the reroute can't run there:
     -- UpdateKeybinds needs SetOverrideBinding and the re-trigger needs SetAttribute on
     -- a secure header, both combat-protected. Never drop the update: SLOT_CHANGED won't
@@ -3777,9 +3782,8 @@ do
     -- leaves routing and attr state stale until something unrelated rebuilds.
     -- (Historical note: this comment once blamed native routing for press-and-tap
     -- empower behaviour; superseded 2026-08-09 -- empower keys are native by design
-    -- now.) Defer to PLAYER_REGEN_ENABLED,
-    -- matching sibling paths (UPDATE_BINDINGS handler, ApplyKeyDownCVar).
-    local _empowerDeferFrame
+    -- now.) Defer via ns.CombatQueue under the shared "UpdateKeybinds" key,
+    -- matching sibling paths (UPDATE_BINDINGS handler, UpdateKeybinds itself).
     function EAB:SetupEventDispatcher()
         if _dispatcherSetup then return end
         _dispatcherSetup = true
@@ -5415,14 +5419,7 @@ do
                     _empowerReroutePending = false
                     if InCombatLockdown() then
                         -- Re-arm for leaving combat instead of dropping it.
-                        if not _empowerDeferFrame then
-                            _empowerDeferFrame = ns.TakeShell()
-                            _empowerDeferFrame:SetScript("OnEvent", function(self)
-                                self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                                _EmpowerReroute()
-                            end)
-                        end
-                        _empowerDeferFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+                        ns.CombatQueue.Defer("UpdateKeybinds", _EmpowerReroute)
                         return
                     end
                     _EmpowerReroute()
@@ -9842,33 +9839,29 @@ end
 -- "visibility", a different key pair -- without this the micro menu/bag bar stays
 -- hidden after every wild pet battle until a /reload.
 --
--- One shared shell frame; pending frames retry once combat drops. If a new
+-- One combat-queue entry; pending frames retry once combat drops. If a new
 -- battle began before regen the pending set is dropped: suppression flags
 -- are still set (re-suppressing keeps the ORIGINAL pre-battle shown state,
 -- see `if not ffd[suppressKey]` below), so that battle's own close
 -- transition completes or re-defers as usual.
 -- do-block with block locals; helper exported on the vtable (200-local cap).
 do
-    local pending, shell
+    local pending
+    local function DrainPending()
+        local p = pending
+        pending = nil
+        if not p then return end
+        if C_PetBattles and C_PetBattles.IsInBattle and C_PetBattles.IsInBattle() then
+            return -- back in a battle; its close transition owns the rest
+        end
+        for f in pairs(p) do
+            EAB_VTABLE.ExtraBars.SetManagedBlizzOwnedSuppressed(f, "petbattle", false)
+        end
+    end
     EAB_VTABLE.ExtraBars.QueuePetBattleUnsuppress = function(frame)
         pending = pending or {}
         pending[frame] = true
-        if not shell then
-            shell = ns.TakeShell()
-            shell:SetScript("OnEvent", function(self)
-                self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                local p = pending
-                pending = nil
-                if not p then return end
-                if C_PetBattles and C_PetBattles.IsInBattle and C_PetBattles.IsInBattle() then
-                    return -- back in a battle; its close transition owns the rest
-                end
-                for f in pairs(p) do
-                    EAB_VTABLE.ExtraBars.SetManagedBlizzOwnedSuppressed(f, "petbattle", false)
-                end
-            end)
-        end
-        shell:RegisterEvent("PLAYER_REGEN_ENABLED")
+        ns.CombatQueue.Defer("PetBattleUnsuppress", DrainPending)
     end
 end
 
@@ -10638,15 +10631,9 @@ end
 -- APIs are combat-protected, so defer to PLAYER_REGEN_ENABLED in combat.
 function EAB:RebuildVisToggleBindings()
     if InCombatLockdown() then
-        if not self._visToggleCombatFrame then
-            local f = ns.TakeShell()
-            f:SetScript("OnEvent", function(self2)
-                self2:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                EAB:RebuildVisToggleBindings()
-            end)
-            self._visToggleCombatFrame = f
-        end
-        self._visToggleCombatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+        ns.CombatQueue.Defer("RebuildVisToggleBindings", function()
+            EAB:RebuildVisToggleBindings()
+        end)
         return
     end
     -- Unique keys that have at least one participating (always/never) bar.
@@ -12720,19 +12707,10 @@ local function UpdateKeybinds()
     -- version of this comment blamed native bindings for press-and-tap
     -- empower behaviour; superseded 2026-08-09 -- empowers route native BY
     -- DESIGN now, with hold-and-release engine-owned.)
-    -- Re-arming here covers every caller at once; sibling paths that already defer just
-    -- arm it twice (idempotent, RegisterEvent twice is one registration).
+    -- Re-arming here covers every caller at once; sibling paths that already defer share
+    -- the "UpdateKeybinds" queue key, so the rebuild runs once after combat.
     if InCombatLockdown() then
-        local df = _bindState.deferFrame
-        if not df then
-            df = ns.TakeShell()
-            df:SetScript("OnEvent", function(self)
-                self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                UpdateKeybinds()
-            end)
-            _bindState.deferFrame = df
-        end
-        df:RegisterEvent("PLAYER_REGEN_ENABLED")
+        ns.CombatQueue.Defer("UpdateKeybinds", UpdateKeybinds)
         return false
     end
     -- With the house editor active our overrides are cleared so Blizzard's
@@ -12999,18 +12977,9 @@ local function ApplyClickRegistration()
 end
 
 -- Called when ActionButtonUseKeyDown CVar changes. Defers to out-of-combat.
-local _keyDownDeferFrame
 local function ApplyKeyDownCVar()
     if InCombatLockdown() then
-        if not _keyDownDeferFrame then
-            _keyDownDeferFrame = ns.TakeShell()
-            _keyDownDeferFrame:SetScript("OnEvent", function(self)
-                self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                ApplyClickRegistration()
-                UpdateKeybinds()
-            end)
-        end
-        _keyDownDeferFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+        ns.CombatQueue.Defer("ApplyKeyDownCVar", ApplyKeyDownCVar)
         return
     end
     ApplyClickRegistration()
@@ -13141,23 +13110,14 @@ end
 -- PLAYER_REGEN_ENABLED, same pattern as QueuePetBattleUnsuppress uses for
 -- the sibling suppression bug this branch was originally about.
 do
-    -- One shared shell, taken once and kept (shells are never returned to a
-    -- pool): the QueuePetBattleUnsuppress shape above. Taking a fresh shell
-    -- per lockdown-closed battle would leak a frame each time.
-    local pending, shell
+    -- One keyed combat-queue entry (idempotent), the QueuePetBattleUnsuppress
+    -- shape above.
+    local function ReclaimMicroMenu()
+        EAB:ReclaimMicroMenu()
+    end
     local function TryReclaimAfterPetBattle()
         if InCombatLockdown() then
-            if pending then return end
-            pending = true
-            if not shell then
-                shell = ns.TakeShell()
-                shell:SetScript("OnEvent", function(self)
-                    self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                    pending = nil
-                    EAB:ReclaimMicroMenu()
-                end)
-            end
-            shell:RegisterEvent("PLAYER_REGEN_ENABLED")
+            ns.CombatQueue.Defer("ReclaimMicroMenu", ReclaimMicroMenu)
             return
         end
         EAB:ReclaimMicroMenu()
@@ -14576,13 +14536,8 @@ end
 
 function EAB:SyncEditModeIcons()
     if InCombatLockdown() then
-        local f = ns.TakeShell()
-        f:RegisterEvent("PLAYER_REGEN_ENABLED")
-        f:SetScript("OnEvent", function(self)
-            self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-            self:SetScript("OnEvent", nil)
-            SyncEditModeIconCounts()
-        end)
+        -- Keyed: repeated calls in one combat collapse into one idempotent sync.
+        ns.CombatQueue.Defer("SyncEditModeIcons", SyncEditModeIconCounts)
         return
     end
     SyncEditModeIconCounts()
@@ -14761,10 +14716,7 @@ function EAB:FinishSetup()
         end
 
         if InCombatLockdown() then
-            local f = ns.TakeShell()
-            f:RegisterEvent("PLAYER_REGEN_ENABLED")
-            f:SetScript("OnEvent", function(self)
-                self:UnregisterEvent("PLAYER_REGEN_ENABLED")
+            ns.CombatQueue.Defer("FinishSetupVisuals", function()
                 C_Timer_After(0.1, DoVisuals)
             end)
         else
@@ -15072,17 +15024,9 @@ function EAB:FinishSetup()
     end
 
     -- Register events
-    local _bindDeferFrame
     self:RegisterEvent("UPDATE_BINDINGS", function()
         if InCombatLockdown() then
-            if not _bindDeferFrame then
-                _bindDeferFrame = ns.TakeShell()
-                _bindDeferFrame:SetScript("OnEvent", function(self)
-                    self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                    UpdateKeybinds()
-                end)
-            end
-            _bindDeferFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+            ns.CombatQueue.Defer("UpdateKeybinds", UpdateKeybinds)
         else
             UpdateKeybinds()
         end
@@ -18433,7 +18377,14 @@ local function EAB_QuickKeybindClose()
         -- so restore that presentation immediately even though secure
         -- visibility drivers still have to wait until combat ends.
         EAB:RefreshMouseover()
-        _qkbHookFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+        ns.CombatQueue.Defer("QuickKeybindClose", function()
+            if _quickKeybindState.closePending then
+                _quickKeybindState.FinishClose()
+            elseif _quickKeybindState.open
+                and not (QuickKeybindFrame and QuickKeybindFrame:IsShown()) then
+                EAB_QuickKeybindClose()
+            end
+        end)
         return
     end
     _quickKeybindState.open = false
@@ -18488,14 +18439,6 @@ _qkbHookFrame:SetScript("OnEvent", function(self, event, addonName)
         _quickKeybindState.InitMacroFrame()
         if _quickKeybindState.macroFrameHooked then
             self:UnregisterEvent("ADDON_LOADED")
-        end
-    elseif event == "PLAYER_REGEN_ENABLED" then
-        self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-        if _quickKeybindState.closePending then
-            _quickKeybindState.FinishClose()
-        elseif _quickKeybindState.open
-            and not (QuickKeybindFrame and QuickKeybindFrame:IsShown()) then
-            EAB_QuickKeybindClose()
         end
     end
 end)

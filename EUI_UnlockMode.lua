@@ -2419,46 +2419,41 @@ do
     local AnchorPark = {}
     EllesmereUI._AnchorPark = AnchorPark
 
-    local function AnchorPark_EnsureFrame()
-        local f = AnchorPark.frame
-        if not f then
-            f = CreateFrame("Frame")
-            AnchorPark.frame = f
-            f:SetScript("OnEvent", function()
-                f:UnregisterAllEvents()
-                local anchorKeys = AnchorPark.keys
-                local posKeys = AnchorPark.posKeys
-                AnchorPark.keys = nil
-                AnchorPark.posKeys = nil
-                -- Bar positions first: anchored children read target bounds,
-                -- so targets must be placed before the anchor pass.
-                if posKeys then
-                    local db = GetPositionDB()
-                    for key in pairs(posKeys) do
-                        local pos = db and db[key]
-                        if pos and pos.point then
-                            if not ApplyCenterPosition(key, pos) then
-                                local bar = GetBarFrame(key)
-                                if bar then
-                                    pcall(function()
-                                        bar:ClearAllPoints()
-                                        bar:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x, pos.y)
-                                    end)
-                                end
-                            end
+    -- One combat queue for every lockdown-skipped apply in this file
+    local queue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
+    EllesmereUI._UnlockCombatQueue = queue
+
+    local function AnchorPark_Drain()
+        local anchorKeys = AnchorPark.keys
+        local posKeys = AnchorPark.posKeys
+        AnchorPark.keys = nil
+        AnchorPark.posKeys = nil
+        -- Bar positions first: anchored children read target bounds,
+        -- so targets must be placed before the anchor pass.
+        if posKeys then
+            local db = GetPositionDB()
+            for key in pairs(posKeys) do
+                local pos = db and db[key]
+                if pos and pos.point then
+                    if not ApplyCenterPosition(key, pos) then
+                        local bar = GetBarFrame(key)
+                        if bar then
+                            pcall(function()
+                                bar:ClearAllPoints()
+                                bar:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x, pos.y)
+                            end)
                         end
                     end
                 end
-                if anchorKeys then
-                    -- Full dependency-sorted pass instead of per-key applies: parked
-                    -- chains must apply parents first; idempotent for never-parked anchors.
-                    if EllesmereUI.ReapplyAllUnlockAnchors then
-                        EllesmereUI.ReapplyAllUnlockAnchors()
-                    end
-                end
-            end)
+            end
         end
-        f:RegisterEvent("PLAYER_REGEN_ENABLED")
+        if anchorKeys then
+            -- Full dependency-sorted pass instead of per-key applies: parked
+            -- chains must apply parents first; idempotent for never-parked anchors.
+            if EllesmereUI.ReapplyAllUnlockAnchors then
+                EllesmereUI.ReapplyAllUnlockAnchors()
+            end
+        end
     end
 
     -- Park an anchored child whose apply was blocked by combat lockdown.
@@ -2466,7 +2461,7 @@ do
         local keys = AnchorPark.keys
         if not keys then keys = {}; AnchorPark.keys = keys end
         keys[childKey] = true
-        AnchorPark_EnsureFrame()
+        queue.Defer("AnchorPark", AnchorPark_Drain)
     end
 
     -- Park a bar whose saved-position reapply was blocked by combat lockdown.
@@ -2474,7 +2469,7 @@ do
         local keys = AnchorPark.posKeys
         if not keys then keys = {}; AnchorPark.posKeys = keys end
         keys[barKey] = true
-        AnchorPark_EnsureFrame()
+        queue.Defer("AnchorPark", AnchorPark_Drain)
     end
 end
 
@@ -5015,24 +5010,13 @@ ApplyCenterPosition = function(barKey, pos)
 
     pcall(function()
         if InCombatLockdown() and frame:IsProtected() then
-            -- Store on the frame so repeated calls overwrite instead of stacking
-            local ffd = EllesmereUI._GetFFD(frame)
-            if not ffd.combatDefer then
-                ffd.combatDefer = CreateFrame("Frame")
-                ffd.combatDefer:RegisterEvent("PLAYER_REGEN_ENABLED")
-                ffd.combatDefer:SetScript("OnEvent", function(self)
-                    self:UnregisterAllEvents()
-                    local args = self._args
-                    if args then
-                        pcall(function()
-                            args.f:ClearAllPoints()
-                            args.f:SetPoint(args.a, UIParent, "CENTER", args.x, args.y)
-                        end)
-                    end
-                    self._args = nil
+            -- Keyed by frame so repeated calls overwrite instead of stacking
+            EllesmereUI._UnlockCombatQueue.Defer(frame, function()
+                pcall(function()
+                    frame:ClearAllPoints()
+                    frame:SetPoint(anchor, UIParent, "CENTER", adjX, adjY)
                 end)
-            end
-            ffd.combatDefer._args = { f = frame, a = anchor, x = adjX, y = adjY }
+            end)
             return
         end
         frame:ClearAllPoints()
@@ -5338,12 +5322,7 @@ local function ApplySavedPositions()
 
     -- If we skipped protected frames, re-run once combat drops
     if inCombat then
-        local reapplyFrame = CreateFrame("Frame")
-        reapplyFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
-        reapplyFrame:SetScript("OnEvent", function(self)
-            self:UnregisterAllEvents()
-            ApplySavedPositions()
-        end)
+        EllesmereUI._UnlockCombatQueue.Defer("ApplySavedPositions", ApplySavedPositions)
     end
 end
 

@@ -2688,12 +2688,7 @@ do
     --- Defers to PLAYER_REGEN_ENABLED if called during combat.
     function PP.SetUIScale(newScale)
         if InCombatLockdown() then
-            local deferFrame = CreateFrame("Frame")
-            deferFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
-            deferFrame:SetScript("OnEvent", function(self)
-                self:UnregisterAllEvents()
-                PP.SetUIScale(newScale)
-            end)
+            EllesmereUI.CombatQueue.Defer("SetUIScale", function() PP.SetUIScale(newScale) end)
             return
         end
         if not EllesmereUIDB then EllesmereUIDB = {} end
@@ -14736,7 +14731,7 @@ function EllesmereUI.IsPartyModeActive()
 end
 do
     local callbacks = {}
-    local pending, regenF = false, nil
+    local pending = false
     function EllesmereUI.RegisterVisEdge(fn)
         if type(fn) == "function" then callbacks[#callbacks + 1] = fn end
     end
@@ -14747,14 +14742,7 @@ do
     end
     function EllesmereUI.FireVisEdge()
         if InCombatLockdown() then
-            if not regenF then
-                regenF = CreateFrame("Frame")
-                regenF:SetScript("OnEvent", function(self)
-                    self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                    EllesmereUI.FireVisEdge()
-                end)
-            end
-            regenF:RegisterEvent("PLAYER_REGEN_ENABLED")
+            EllesmereUI.CombatQueue.Defer("FireVisEdge", EllesmereUI.FireVisEdge)
         end
         -- Coalesced and deferred one frame: a clean execution context, and a
         -- toggle that stops and restarts in one frame costs one pass.

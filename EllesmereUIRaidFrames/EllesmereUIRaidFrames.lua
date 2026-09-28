@@ -6,7 +6,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Secret-value-safe absorb shields matching UnitFrames visuals.
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 
 local ERF = EllesmereUI.Lite.NewAddon(ADDON_NAME)
@@ -111,6 +111,10 @@ do
         return CreateFrame("Frame")
     end
 end
+
+-- "Run once after combat" for one-shot combat-gated deferrals. The shell is taken
+-- in the main chunk, so drained work bills RaidFrames. Keys are per purpose.
+ns.CombatQueue = EllesmereUI.NewCombatQueue(ns.TakeShell())
 
 -------------------------------------------------------------------------------
 --  Locals & upvalues
@@ -13688,16 +13692,7 @@ end
 ns._PT_Apply = function()
     if ns._ptDesired == ns._ptEnabled then return end
     if InCombatLockdown() then
-        if not ns._ptCombatWatcher then
-            local watcher = CreateFrame("Frame")
-            watcher:RegisterEvent("PLAYER_REGEN_ENABLED")
-            watcher:SetScript("OnEvent", function(self)
-                self:UnregisterAllEvents()
-                ns._ptCombatWatcher = nil
-                ns._PT_Apply()
-            end)
-            ns._ptCombatWatcher = watcher
-        end
+        ns.CombatQueue.Defer("PT_Apply", ns._PT_Apply)
         return
     end
     if ns._ptDesired then

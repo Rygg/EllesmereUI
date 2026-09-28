@@ -4,8 +4,10 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Custom minimap skin and layout for EllesmereUI.
 -------------------------------------------------------------------------------
 local ADDON_NAME = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
-EllesmereUI._ModuleNS[ADDON_NAME] = select(2, ...)  -- LOD options files read this module ns via the registry
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+local ns = select(2, ...)
+EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
+ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
 local EBS = EllesmereUI.Lite.NewAddon("EllesmereUIMinimap")
 
@@ -187,22 +189,12 @@ end
 -------------------------------------------------------------------------------
 --  Combat safety
 -------------------------------------------------------------------------------
-local pendingApply = false
 local ApplyAll  -- forward declaration
 
+-- Keyed queue entry: repeat requests before regen collapse into one apply.
 local function QueueApplyAll()
-    if pendingApply then return end
-    pendingApply = true
+    ns.CombatQueue.Defer("ApplyAll", ApplyAll)
 end
-
-local combatFrame = CreateFrame("Frame")
-combatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
-combatFrame:SetScript("OnEvent", function()
-    if pendingApply then
-        pendingApply = false
-        ApplyAll()
-    end
-end)
 
 -------------------------------------------------------------------------------
 --  Minimap Skin

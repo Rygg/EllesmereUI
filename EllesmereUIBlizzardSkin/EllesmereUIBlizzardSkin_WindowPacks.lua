@@ -7129,12 +7129,7 @@ WSkin.RegisterWindow({
     apply = function()
         -- Micro buttons are secure: if this runs mid-combat (reload during a fight), defer the pass to end of combat.
         if InCombatLockdown() then
-            local w = CreateFrame("Frame")
-            w:RegisterEvent("PLAYER_REGEN_ENABLED")
-            w:SetScript("OnEvent", function(self)
-                self:UnregisterAllEvents()
-                pcall(Skin_MicroMenu)
-            end)
+            ns.CombatQueue.Defer("MicroMenuSkin", function() pcall(Skin_MicroMenu) end)
             return
         end
         pcall(Skin_MicroMenu)

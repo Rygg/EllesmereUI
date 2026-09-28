@@ -699,6 +699,7 @@ end
 -------------------------------------------------------------------------------
 
 local cvarPending = false
+local FlushCVars   -- forward: AssertCVars defers it, and it calls AssertCVars back
 
 -- Everything that is not the open world, rather than a whitelist of instance types: a type
 -- Blizzard adds later falls through to "stay out" instead of "draw".
@@ -795,8 +796,8 @@ local function AssertCVars()
         -- Deferred rather than only handled in SetActive: switching things off in combat still
         -- owes the player their CVars back once the fight ends.
         cvarPending = true
-        EnsureFrame():RegisterEvent("PLAYER_REGEN_ENABLED")
-        eventFrame:RegisterEvent("PLAYER_LOGOUT")
+        ns.CombatQueue.Defer("BubbleCVars", FlushCVars)
+        EnsureFrame():RegisterEvent("PLAYER_LOGOUT")
         return
     end
     cvarPending = false
@@ -846,6 +847,15 @@ local function AssertCVars()
     end
 end
 
+-- Runs once on the regen edge after a pass that landed in combat.
+function FlushCVars()
+    if cvarPending then AssertCVars() end
+    -- Only kept while the feature runs; a deferred restore leaves nothing behind.
+    if not cvarPending and not active and eventFrame then
+        eventFrame:UnregisterEvent("PLAYER_LOGOUT")
+    end
+end
+
 -------------------------------------------------------------------------------
 --  Events
 -------------------------------------------------------------------------------
@@ -864,16 +874,6 @@ local function OnEvent(_, event, ...)
         -- an engine bubble frame that outlives the reload cannot come back invisible for the
         -- next speaker.
         ReleaseAll()
-        return
-    end
-
-    if event == "PLAYER_REGEN_ENABLED" then
-        if cvarPending then AssertCVars() end
-        -- Only kept while the feature runs; a deferred restore leaves nothing behind.
-        if not cvarPending and not active and eventFrame then
-            eventFrame:UnregisterEvent("PLAYER_REGEN_ENABLED")
-            eventFrame:UnregisterEvent("PLAYER_LOGOUT")
-        end
         return
     end
 
@@ -967,7 +967,6 @@ local function SetActive(on)
     active = true
 
     if firstPass then
-        eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
         eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
         eventFrame:RegisterEvent("PLAYER_LOGOUT")
 

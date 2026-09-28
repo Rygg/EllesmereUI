@@ -15,8 +15,9 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --    - Copy Chat button + session history (own message store)
 -------------------------------------------------------------------------------
 local addonName, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[addonName] = ns  -- LOD options files read this module ns via the registry
+ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 local EUI = _G.EllesmereUI
 if not EUI then return end
 
@@ -3235,21 +3236,16 @@ end
 -- CURRENT intended passthrough state whole; the delta gate makes the pass
 -- idempotent (everything that already landed is skipped, only the refused
 -- writes replay). Fires before the visibility dispatcher's deferred
--- refresh, so a post-combat reveal starts from a clean slate. The event is
--- registered only while armed: zero idle cost.
-local _chatPMRegenFrame
-ArmChatPMRegen = function()
-    if not _chatPMRegenFrame then
-        _chatPMRegenFrame = CreateFrame("Frame")
-        _chatPMRegenFrame:SetScript("OnEvent", function(self)
-            self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-            PassthroughFrames(_chatPassthrough)
-            if _chatPassthrough and not _visChatVisible then
-                SetChatStackShown(false)
-            end
-        end)
+-- refresh, so a post-combat reveal starts from a clean slate. Runs through
+-- the module combat queue: zero idle cost.
+local function ChatPMRegenReapply()
+    PassthroughFrames(_chatPassthrough)
+    if _chatPassthrough and not _visChatVisible then
+        SetChatStackShown(false)
     end
-    _chatPMRegenFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+end
+ArmChatPMRegen = function()
+    ns.CombatQueue.Defer("ChatPassthroughReapply", ChatPMRegenReapply)
 end
 
 local function SetChatMousePassthrough(on)
@@ -4469,13 +4465,12 @@ local function SkinChatFrame(cf)
                 HideSidebarIconTooltip(self)
             end)
 
-            local fcLast, fcDirty
+            local fcLast
             local function UpdateFriendsCount()
                 if InCombatLockdown() then
-                    fcDirty = true
+                    ns.CombatQueue.Defer(UpdateFriendsCount, UpdateFriendsCount)
                     return
                 end
-                fcDirty = nil
                 local _, numOnline = BNGetNumFriends()
                 local wowOnline = C_FriendList.GetNumOnlineFriends() or 0
                 local total = numOnline + wowOnline
@@ -4493,22 +4488,15 @@ local function SkinChatFrame(cf)
             fcEvents:RegisterEvent("PLAYER_ENTERING_WORLD")
             fcEvents:RegisterEvent("BN_CONNECTED")
             fcEvents:RegisterEvent("BN_DISCONNECTED")
-            fcEvents:RegisterEvent("PLAYER_REGEN_ENABLED")
             -- Recount inline on the exact edges -- the narrow account
             -- online/offline pair (the same field-proven set the DataBars
             -- micromenu count uses), NOT the BN_FRIEND_INFO_CHANGED presence
             -- firehose, so nothing fires between real login/logout edges.
             -- Two cached count reads plus one compare, no timers, and the
             -- label only rewrites when the number changed. In combat nothing
-            -- recounts at all -- events mark the count dirty and the regen
-            -- edge settles it once.
-            fcEvents:SetScript("OnEvent", function(_, event)
-                if event == "PLAYER_REGEN_ENABLED" then
-                    if fcDirty then UpdateFriendsCount() end
-                    return
-                end
-                UpdateFriendsCount()
-            end)
+            -- recounts at all -- the count defers itself once to the combat
+            -- queue and settles on the regen edge.
+            fcEvents:SetScript("OnEvent", UpdateFriendsCount)
 
             CFD(cf).friendsCount = friendsCount
             -- A count inside its button (the stock QuickJoin plate) is not a

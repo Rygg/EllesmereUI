@@ -7,7 +7,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  Does NOT parse secret values works around restricted APIs.
 -------------------------------------------------------------------------------
 local _, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS["EllesmereUICooldownManager"] = ns  -- LOD options files read this module ns via the registry
 
 -- CPU-attribution shell pool: the engine bills a handler's call tree to the addon
@@ -30,6 +30,10 @@ do
         return CreateFrame("Frame")
     end
 end
+
+-- Run-once-after-combat queue (EllesmereUI_Ticker.lua). Frame taken in the main
+-- chunk, so drained work bills CooldownManager. Keys are per purpose.
+ns.CombatQueue = EllesmereUI.NewCombatQueue(ns.TakeShell())
 
 -- EMERGENCY CONFLICT GUARD: the addon detected below hooks the same Blizzard
 -- frames we do; running both crashes the client on the loading screen. Detect
@@ -8740,26 +8744,20 @@ EllesmereUI.CDMReconcileActiveSpecSpells = function()
     if ns.PruneEquipmentBuffRows then ns.PruneEquipmentBuffRows() end
 end
 
--- Shared PLAYER_REGEN_ENABLED waiter for the automatic keep/drop pass below.
--- Deliberately its OWN frame, not the module's big shared event handler
+-- Shared after-combat waiter for the automatic keep/drop pass below, via the
+-- module combat queue rather than the module's big shared event handler
 -- further down this file -- that frame's registration set is static and
--- must not churn. Registers the event ONLY while a pass is pending and
--- unregisters itself the instant it fires, so an idle session where no pass
--- is ever deferred carries zero event traffic from this path.
-local _cdmRegenWaiter
-local function ArmCDMDropRegenWaiter()
-    ns._cdmDropPending = true
-    if not _cdmRegenWaiter then
-        _cdmRegenWaiter = CreateFrame("Frame")
-        _cdmRegenWaiter:Hide()
-        _cdmRegenWaiter:SetScript("OnEvent", function(self)
-            self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-            ns._cdmDropPending = false
-            if ns.RequestCDMDropPass then ns.RequestCDMDropPass("regen") end
-        end)
+-- must not churn. The queue holds PLAYER_REGEN_ENABLED only while something
+-- is pending, so an idle session carries zero event traffic from this path.
+local ArmCDMDropRegenWaiter
+do
+    local function DropPassAfterCombat()
+        ns._cdmDropPending = false
+        if ns.RequestCDMDropPass then ns.RequestCDMDropPass("regen") end
     end
-    if not _cdmRegenWaiter:IsEventRegistered("PLAYER_REGEN_ENABLED") then
-        _cdmRegenWaiter:RegisterEvent("PLAYER_REGEN_ENABLED")
+    ArmCDMDropRegenWaiter = function()
+        ns._cdmDropPending = true
+        ns.CombatQueue.Defer("CDMDropPass", DropPassAfterCombat)
     end
 end
 
@@ -9441,8 +9439,8 @@ function ns.ReconcileBuffFamilyDrops(barKey)
     if not ns._cdmDataLoaded then return sd end
     if InCombatLockdown() then
         -- Shared regen waiter (defined with ns.ReconcileAssignedSpellDrops /
-        -- ns.RequestCDMDropPass, RS3/RS4 above): arms the PLAYER_REGEN_ENABLED
-        -- listener that clears ns._cdmDropPending and re-requests a pass. Bare-setting
+        -- ns.RequestCDMDropPass, RS3/RS4 above): queues the after-combat entry
+        -- that clears ns._cdmDropPending and re-requests a pass. Bare-setting
         -- the flag without arming the waiter would permanently disable every future
         -- automatic pass this session (cd/utility included) since nothing would ever clear it.
         ArmCDMDropRegenWaiter()

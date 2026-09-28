@@ -1,7 +1,7 @@
 if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_ClientGate.lua)
 local GetSpecialization = (C_SpecializationInfo and C_SpecializationInfo.GetSpecialization) or GetSpecialization
 local addonName, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[addonName] = ns  -- LOD options files read this module ns via the registry
 
 local math_floor, math_ceil, math_max, math_min, math_abs =
@@ -14,6 +14,11 @@ local AbbreviateNumbers = (EllesmereUI.IS_FOREVER and EllesmereUI.ForeverAbbrevi
 ns.AbbreviateNumbers = AbbreviateNumbers
 
 local PP = EllesmereUI.PP
+
+-- "Run once after combat" for the combat-gated deferrals of this addon (all files).
+-- The frame is created in the main chunk, so drained work bills UnitFrames. Keys are
+-- per purpose; PlayerAuraBars prefixes its own with "PAB:".
+ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
 -- Taint-safe DisableBlizzard override. Stock lib reparents inline via a SetParent
 -- hooksecurefunc; Edit Mode's layout pass calls SetParent on managed containers
@@ -29,13 +34,15 @@ do
     local bossHandled = false
 
     -- Combat fallback: protected frames can't reparent in lockdown; park here, sweep at regen (mirrors stock lib).
-    local regenWatcher = CreateFrame("Frame")
-    regenWatcher:SetScript("OnEvent", function(self)
-        if InCombatLockdown() then return end
-        self:UnregisterEvent("PLAYER_REGEN_ENABLED")
+    local SweepLooseFrames
+    SweepLooseFrames = function()
+        if InCombatLockdown() then
+            ns.CombatQueue.Defer("HiddenParentSweep", SweepLooseFrames)
+            return
+        end
         for f in pairs(looseFrames) do f:SetParent(hiddenParent) end
         wipe(looseFrames)
-    end)
+    end
 
     local function ApplyHiddenParent(frame)
         pendingParent[frame] = nil
@@ -45,7 +52,7 @@ do
             C_Timer.After(0.25, function() ApplyHiddenParent(frame) end)
         elseif InCombatLockdown() and frame:IsProtected() then
             looseFrames[frame] = true
-            regenWatcher:RegisterEvent("PLAYER_REGEN_ENABLED")
+            ns.CombatQueue.Defer("HiddenParentSweep", SweepLooseFrames)
         else
             frame:SetParent(hiddenParent)
         end
@@ -15403,17 +15410,12 @@ function InitializeFrames()
             PP.Size(frame, totalWidth, totalH)
         else
             frame._pendingSize = { totalWidth, totalH }
-            if not frame._pendingSizeListener then
-                frame._pendingSizeListener = CreateFrame("Frame")
-                frame._pendingSizeListener:SetScript("OnEvent", function(self)
-                    self:UnregisterAllEvents()
-                    if frame._pendingSize and not InCombatLockdown() then
-                        PP.Size(frame, frame._pendingSize[1], frame._pendingSize[2])
-                    end
-                    frame._pendingSize = nil
-                end)
-            end
-            frame._pendingSizeListener:RegisterEvent("PLAYER_REGEN_ENABLED")
+            ns.CombatQueue.Defer("PlayerClassPowerSize", function()
+                if frame._pendingSize and not InCombatLockdown() then
+                    PP.Size(frame, frame._pendingSize[1], frame._pendingSize[2])
+                end
+                frame._pendingSize = nil
+            end)
         end
 
         -- Update health bar xOffset when portrait width changes
@@ -15861,7 +15863,11 @@ function InitializeFrames()
     -- "Hidden"). Not fixable without reparenting/overriding a secure frame in combat,
     -- so it's surfaced in the mini-frame "Frame Source" tooltip (BuildFoTToTOptions),
     -- which recommends matching the parent's source instead of mixing them.
-    local _suppressedChildren, _suppressWatcher, _rehidePending
+    local _suppressedChildren, _rehidePending
+    local function RehideSuppressedChildren()
+        if InCombatLockdown() then return end
+        for f in pairs(_suppressedChildren) do f:Hide() end
+    end
     -- Deferred re-hide: OnShow fires inside whatever secure execution showed the parent
     -- (target swaps, Edit Mode's preview pass on a Blizzard-source TargetFrame/
     -- FocusFrame); hiding inline there taints the rest of that execution (same
@@ -15875,7 +15881,7 @@ function InitializeFrames()
             _rehidePending[frame] = true
             C_Timer.After(0.25, function() _DeferredRehide(frame) end)
         elseif InCombatLockdown() then
-            _suppressWatcher:RegisterEvent("PLAYER_REGEN_ENABLED")
+            ns.CombatQueue.Defer("SuppressedChildRehide", RehideSuppressedChildren)
         else
             frame:Hide()
         end
@@ -15886,14 +15892,6 @@ function InitializeFrames()
         if not InCombatLockdown() then frame:Hide() end
         _suppressedChildren = _suppressedChildren or {}
         _rehidePending = _rehidePending or {}
-        if not _suppressWatcher then
-            _suppressWatcher = CreateFrame("Frame")
-            _suppressWatcher:SetScript("OnEvent", function(self)
-                self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                if InCombatLockdown() then return end
-                for f in pairs(_suppressedChildren) do f:Hide() end
-            end)
-        end
         if not _suppressedChildren[frame] then
             _suppressedChildren[frame] = true
             frame:HookScript("OnShow", function(self)
@@ -17359,16 +17357,9 @@ function SetupOptionsPanel()
     -- click wins and stacked toggles collapse to one apply).
     function ns.UF_SetBossFramesActive(on)
         if InCombatLockdown() then
-            local w = ns._bossToggleRegen
-            if not w then
-                w = CreateFrame("Frame")
-                w:SetScript("OnEvent", function(self)
-                    self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                    ns.UF_SetBossFramesActive(db.profile.enabledFrames.boss ~= false)
-                end)
-                ns._bossToggleRegen = w
-            end
-            w:RegisterEvent("PLAYER_REGEN_ENABLED")
+            ns.CombatQueue.Defer("BossFramesActive", function()
+                ns.UF_SetBossFramesActive(db.profile.enabledFrames.boss ~= false)
+            end)
             return
         end
         for i = 1, 5 do
@@ -17392,8 +17383,8 @@ function SetupOptionsPanel()
     -- _toggleClassPower (a Spec Override applying at login, a profile switch, an
     -- import). Gated on an actual change because the toggle is a full teardown
     -- and rebuild; running it every reload would thrash the bar.
-    local cpRegen = CreateFrame("Frame")
-    local function RealiseClassPowerStyle()
+    local RealiseClassPowerStyle
+    RealiseClassPowerStyle = function()
         if not frames._toggleClassPower then return end
         local wantCP = db.profile.player.classPowerStyle or "none"
         -- WoW Forever: compare the style that builds, not the saved one (the
@@ -17406,15 +17397,11 @@ function SetupOptionsPanel()
         -- lockdown return (same shape as the UpdateFrameVisibility note above),
         -- so this needs its own guard plus a regen re-run to re-arm the pass.
         if InCombatLockdown() then
-            cpRegen:RegisterEvent("PLAYER_REGEN_ENABLED")
+            ns.CombatQueue.Defer("RealiseClassPowerStyle", RealiseClassPowerStyle)
             return
         end
         frames._toggleClassPower(wantCP)
     end
-    cpRegen:SetScript("OnEvent", function(self)
-        self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-        RealiseClassPowerStyle()
-    end)
     reloadThrottle:SetScript("OnUpdate", function(self)
         self:Hide()
         reloadPending = false

@@ -6,7 +6,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  animations, combat fade, low-resource alerts, class-colored bars
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
 EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
 local ERB = EllesmereUI.Lite.NewAddon(ADDON_NAME)
 ns.ERB = ERB
@@ -1587,6 +1587,7 @@ do
         return CreateFrame("Frame")
     end
 end
+ns.CombatQueue = EllesmereUI.NewCombatQueue(ns.TakeShell())
 local isInCombat = false
 local currentAlpha = 1
 local targetAlpha = 1
@@ -11455,13 +11456,7 @@ function ERB:ApplyAll()
             RegisterStateDriver(ERB._vehicleProxy, "erbvehicle", "[vehicleui][petbattle] hide; show")
         end
         if InCombatLockdown() then
-            local waiter = CreateFrame("Frame")
-            waiter:RegisterEvent("PLAYER_REGEN_ENABLED")
-            waiter:SetScript("OnEvent", function(self)
-                self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-                self:SetScript("OnEvent", nil)
-                InitVehicleProxy()
-            end)
+            ns.CombatQueue.Defer("VehicleProxyInit", InitVehicleProxy)
         else
             InitVehicleProxy()
         end
