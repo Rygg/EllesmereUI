@@ -158,12 +158,14 @@ local MUTED_HEX = GetColorHex(MUTED_TEXT_COLOR)
 local function GetRunTimeColor(chestCount)
     if chestCount == 0 then return MUTED_HEX end
     if chestCount == 3 then
-        local color = ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[3]
+        local color = ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[4]
         if color then return GetColorHex(color) end
         return GetColorHex(EUI.TEXT_WHITE)
     end
     if chestCount == 2 then
-        return GetColorHex(GetAccentColor())
+        local color = ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[2]
+        if color then return GetColorHex(color) end
+        return GetColorHex(EUI.TEXT_WHITE)
     end
     return GetColorHex(EUI.TEXT_WHITE)
 end
