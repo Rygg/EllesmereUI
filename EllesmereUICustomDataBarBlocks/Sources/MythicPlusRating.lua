@@ -22,16 +22,26 @@ local BLOCK_TYPE = "mythicplusrating"
 
 local MAX_RUNS = 16
 
-local format = string.format
-local floor = math.floor
-local ceil = math.ceil
-local max = math.max
-local type = type
-local ipairs = ipairs
-local pcall = pcall
-local GetTime = GetTime
-local InCombatLockdown = InCombatLockdown
+-- Upvalues
+local CreateFrame         = CreateFrame
+local InCombatLockdown    = InCombatLockdown
+local GetTime             = GetTime
+local type                = type
+local ipairs              = ipairs
+local pcall               = pcall
+local format              = string.format
+local floor               = math.floor
+local ceil                = math.ceil
+local max                 = math.max
 local ITEM_QUALITY_COLORS = ITEM_QUALITY_COLORS
+
+local CONTENT_BASE = K.CONTENT_BASE
+local InstKey = K.InstKey
+local MakeEventFrame = K.MakeEventFrame
+local RegisterInstEvents = K.RegisterInstEvents
+local UnregisterInstEvents = K.UnregisterInstEvents
+local VSlotW = K.VSlotW
+local MaybeRelayout = K.MaybeRelayout
 local MUTED_TEXT_COLOR = ITEM_QUALITY_COLORS and ITEM_QUALITY_COLORS[0]
     or { r = 0.667, g = 0.667, b = 0.667 }
 
@@ -45,7 +55,7 @@ local function GetScore()
     if not ok or IsSecret(summary) or type(summary) ~= "table" then return nil end
     local score = summary.currentSeasonScore
     if IsSecret(score) or type(score) ~= "number" then return nil end
-    return math.max(0, floor(score + 0.5))
+    return max(0, floor(score + 0.5))
 end
 
 local function GetScoreColor(score)
@@ -206,12 +216,11 @@ local function GetSpellCooldownRemaining(spellID)
     end
     if canaccessvalue and (not canaccessvalue(startTime) or not canaccessvalue(duration)) then return nil end
     if duration <= 0 then return 0 end
-    return math.max(0, startTime + duration - GetTime())
+    return max(0, startTime + duration - GetTime())
 end
 
-local function RenderTooltip(button)
-    -- Use DataBars' owned tooltip helpers instead of defining another global
-    -- tooltip; this keeps the extension out of the engine while sharing its UI.
+local function ShowMythicPlusTooltip(button)
+    -- Compose the tooltip with DataBars' helpers so this extension uses the shared tooltip frame.
     local score = GetScore()
     local title = L("Mythic+ Rating") .. ": "
     if score then
@@ -316,7 +325,7 @@ local function RenderTooltip(button)
         if readyCount > 0 then
             ns.Tip_AddLine(L("Click a dungeon to teleport"), 0.8, 0.8, 0.8)
         else
-            -- All portals share one cooldown, so a single soonest reading covers every dungeon.
+            -- On-cooldown portals share one cooldown group, so show the soonest remaining time once.
             local cdText = soonestCooldown and FormatRunTime(ceil(soonestCooldown)) or "-"
             ns.Tip_AddDouble(L("On Cooldown"), cdText, 0.65, 0.65, 0.65, 0.5, 0.5, 0.5)
         end
@@ -343,15 +352,13 @@ local function OpenDungeonsAndRaids()
         local ok, loaded = pcall(C_AddOns.LoadAddOn, "Blizzard_GroupFinder")
         if not ok or not loaded then return end
     end
-    -- Explicit sidePanelName/selection so this switches tabs instead of just hiding an already-open PVEFrame.
+    -- Pass the Group Finder frame and LFD panel so an open PVEFrame switches there instead of toggling closed.
     if PVEFrame_ToggleFrame then pcall(PVEFrame_ToggleFrame, "GroupFinderFrame", _G.LFDParentFrame) end
 end
 
--- Register through the shared adapter while keeping this factory in the
--- separately updateable custom-block addon.
 DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(blockCfg, slot, content, barCtx)
     local inst = { cfg = blockCfg, slot = slot, content = content, ctx = barCtx }
-    inst.key = K.InstKey(barCtx, blockCfg)
+    inst.key = InstKey(barCtx, blockCfg)
     inst.events = {
         "PLAYER_ENTERING_WORLD",
         "CHALLENGE_MODE_COMPLETED",
@@ -373,14 +380,14 @@ DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(bloc
         local score = GetScore()
         local text = score and tostring(score) or "-"
         local barCfg = barCtx.cfg
-        local fontSize = max(9, floor(K.CONTENT_BASE * 0.4333 + 0.5))
+        local fontSize = max(9, floor(CONTENT_BASE * 0.4333 + 0.5))
 
         ns.SetFont(scoreText, fontSize, barCfg)
         scoreText:SetText(text)
         scoreText:ClearAllPoints()
 
         if barCtx.IsVertical() then
-            local slotW = K.VSlotW(self)
+            local slotW = VSlotW(self)
             local innerW = max(24, slotW - 8)
             ns.SetWrappedText(scoreText, innerW, "CENTER")
             scoreText:SetPoint("CENTER", button, "CENTER")
@@ -403,17 +410,13 @@ DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(bloc
             red, green, blue = MUTED_TEXT_COLOR.r, MUTED_TEXT_COLOR.g, MUTED_TEXT_COLOR.b
         end
         scoreText:SetTextColor(red, green, blue, 1)
-        K.MaybeRelayout(self)
-    end
-
-    local function ShowTooltip()
-        RenderTooltip(button)
+        MaybeRelayout(self)
     end
 
     button:SetScript("OnEnter", function()
         mouseOver = true
         inst:Refresh()
-        ShowTooltip()
+        ShowMythicPlusTooltip(button)
     end)
     button:SetScript("OnLeave", function()
         mouseOver = false
@@ -428,19 +431,19 @@ DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(bloc
         end
     end)
 
-    inst.eventFrame = K.MakeEventFrame(inst, function(self, event)
+    inst.eventFrame = MakeEventFrame(inst, function(self, event)
         if self._dead then return end
         self:Refresh()
-        if ns.Tip_IsOwned(button) then ShowTooltip() end
+        if ns.Tip_IsOwned(button) then ShowMythicPlusTooltip(button) end
     end)
 
     function inst:Enable()
         content:Show()
-        K.RegisterInstEvents(self)
+        RegisterInstEvents(self)
     end
 
     function inst:Disable()
-        K.UnregisterInstEvents(self)
+        UnregisterInstEvents(self)
         ns.Tip_Hide(button)
         mouseOver = false
         content:Hide()
@@ -456,7 +459,7 @@ DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(bloc
 
     function inst:Destroy()
         self._dead = true
-        K.UnregisterInstEvents(self)
+        UnregisterInstEvents(self)
         ns.Tip_Hide(button)
         content:Hide()
     end
