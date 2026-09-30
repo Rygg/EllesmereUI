@@ -3014,6 +3014,11 @@ ns.ApplyOnlyNumbers = ApplyOnlyNumbers
 --  Add our visual overlays to a CDM frame (one-time per frame).
 -------------------------------------------------------------------------------
 local function DecorateFrame(frame, barData)
+    -- Empty Slot: deliberately undecorated (true blank grid space, no texture/
+    -- cooldown/border/glowOverlay). Never register it in hookFrameData -- every
+    -- _getFD(icon) lookup then reads nil and every fd-driven pass (bar-wide
+    -- glow/border/background included) already no-ops on a nil fd.
+    if frame._isEmptySlotFrame then return end
     local fd = hookFrameData[frame]
     if not fd then fd = {}; hookFrameData[frame] = fd end
 
@@ -5827,6 +5832,30 @@ local function GetOrCreateItemPresetFrame(barKey, itemID)
 end
 ns.GetOrCreateItemPresetFrame = GetOrCreateItemPresetFrame
 
+-------------------------------------------------------------------------------
+--  Empty Slot: a purely decorative placeholder that reserves one grid position
+--  with nothing drawn (no texture, no cooldown, no border) -- true blank space,
+--  so a bar can visually group its icons. One frame per marker (unique per Add,
+--  see ns.NewEmptySlotMarker), reused across reanchors like every other custom
+--  frame. Never registered with _RegisterPresetLive: it has no cooldown to poll
+--  (zero cost beyond the one-time frame creation).
+-------------------------------------------------------------------------------
+local function GetOrCreateEmptySlotFrame(marker)
+    local fkey = "emptyslot:" .. marker
+    local f = _presetFrames[fkey]
+    if f then return f end
+
+    f = CreateFrame("Frame", nil, UIParent)
+    f:SetSize(36, 36); f:Hide()
+    f:EnableMouse(false)
+    f._isEmptySlotFrame = true
+    f.cooldownID = nil; f.cooldownInfo = nil
+    f.layoutIndex = 99999
+    _presetFrames[fkey] = f
+    return f
+end
+ns.GetOrCreateEmptySlotFrame = GetOrCreateEmptySlotFrame
+
 -- Crafted-quality pip for item frames -- the action bars' Show Rank Icon, for
 -- CDM. Those read C_ActionBar.GetProfessionQualityInfo, which needs an action
 -- slot; an item frame has only an item id, so this asks the item-side call that
@@ -8173,6 +8202,14 @@ local function CollectAndReanchor()
                             else
                                 tf:Hide()
                             end
+                        elseif sid and ns.IsEmptySlotMarker(sid) then
+                            -- Empty Slot: pure grid spacer, no live state to
+                            -- push. Must be tested before the item-preset
+                            -- branch: it is also <= -100.
+                            local f = GetOrCreateEmptySlotFrame(sid)
+                            frames[#frames + 1] = f
+                            local fc = FC(f)
+                            fc.barKey = barKey; fc.spellID = sid
                         elseif sid and sid <= -100 then
                             -- Item preset (potions, healthstone, etc.) or a
                             -- user-added custom item ID. Frame creation (incl.

@@ -186,6 +186,10 @@ local PP = EllesmereUI.PP
 
 local MEDIA = "Interface\\AddOns\\EllesmereUIDataBars\\media\\"
 ns.MEDIA = MEDIA
+-- The suite's shared micro menu art (EllesmereUI\media\micromenu\), also used by
+-- Quickdraw: the micro menu, bags, gold, location, item level, stats and Great
+-- Vault icons.
+ns.MICROMENU_MEDIA = "Interface\\AddOns\\EllesmereUI\\media\\micromenu\\"
 
 -------------------------------------------------------------------------------
 --  Defaults (fresh profile shape; the old single-bar keys are abandoned)
@@ -243,7 +247,7 @@ ns.BLOCK_DEFAULTS = {
     profession = {},
     profession2 = {},
     travel     = { randomizeHs = true },
-    micromenu  = { disableBlizzardMicroMenu = false, hideSocialText = false, charStatsTooltip = false, socialTooltip = false, mainMenuSpacing = 4, iconSpacing = 2,
+    micromenu  = { disableBlizzardMicroMenu = false, hideSocialText = false, mainMenuSpacing = 4, iconSpacing = 2,
                    menu = true, guild = true, social = true, char = true, spell = true, ach = true, quest = true, lfg = true,
                    pvp = true, housing = true, journal = true, pet = true, shop = true, help = true },
     currency   = { currencyId = nil, showIcon = true, showDescription = true },

@@ -1198,6 +1198,7 @@ local friendlyFrameCache = CreateFramePool("Frame", UIParent, nil, nil, false, f
     plate.leftArrow = plate:CreateTexture(nil, "OVERLAY")
     plate.leftArrow:SetTexture(ns.TARGET_ARROW_DIR .. _aSt.l .. ".png")
     plate.leftArrow:SetWidth(_aSt.w)
+    plate._arrowW = _aSt.w
     plate.leftArrow:SetPoint("TOP", plate.name, "LEFT", -(2 + _aSt.w / 2), 8)
     plate.leftArrow:SetPoint("BOTTOM", plate.name, "LEFT", -(2 + _aSt.w / 2), -8)
     plate.leftArrow:Hide()
@@ -1424,6 +1425,7 @@ function FriendlyFrame:ApplyTarget()
         self.rightArrow:SetVertexColor(acr, acg, acb)
         self.leftArrow:SetSize(st.w, 16)
         self.rightArrow:SetSize(st.w, 16)
+        self._arrowW = st.w
     end
     self.leftArrow:SetShown(showArrows or false)
     self.rightArrow:SetShown(showArrows or false)

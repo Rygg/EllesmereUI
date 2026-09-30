@@ -788,7 +788,8 @@ local function AssertCVars()
         local held = heldCVars
         -- Off and holding nothing: no CVar is owed to anyone, so a pass that lands here in
         -- combat has nothing to defer. Without this a profile swap in combat would build the
-        -- event frame and arm two events for a player who never switched the feature on.
+        -- event frame, arm PLAYER_LOGOUT and queue a CVar pass for a player who never switched
+        -- the feature on.
         if cfg.enabled ~= true and not (held and next(held)) then
             cvarPending = false
             return

@@ -324,6 +324,9 @@ ns._COMBAT_CLASS_COORDS = EllesmereUI.CLASS_ICON_SPRITE_COORDS
 -------------------------------------------------------------------------------
 --  Default settings
 -------------------------------------------------------------------------------
+-- Level Text's default position: attached to the name on WoW Forever, None on
+-- retail (the per-client default rule; every fallback below reads it).
+ns.RF_LEVEL_DEFAULT = (EllesmereUI.IS_FOREVER == true) and "name" or "none"
 local defaults = {
     profile = {
         -- Size & layout
@@ -344,6 +347,7 @@ local defaults = {
         visibleGroups    = { true, true, true, true, true, true, false, false },
         hideEmptyGroups  = true,     -- collapse subgroups with no members (raid only, real frames)
         excludeHiddenGroupsFromSize = true, -- hidden Show Groups don't count toward the raid-size breakpoint
+        mythicRaidHideGroups = false, -- Hide Groups 5-8 in Mythic Raid (on top of Show Groups)
 
         -- Visibility
         showWhenSolo     = false,
@@ -455,6 +459,7 @@ local defaults = {
         topNameBarTextOffsetX   = 0,
         topNameBarTextOffsetY   = 0,
         topNameBarTextAlign     = "center", -- "center", "left", "right"
+        topNameBarBottom        = false,    -- Show on Bottom: the bar takes the frame's bottom edge
 
         -- Text
         nameSize         = 10,
@@ -464,6 +469,12 @@ local defaults = {
         namePosition     = "topleft", -- "topleft", "top", "topright", "left", "center", "right", "bottomleft", "bottom"
         nameOffsetX      = 0,
         nameOffsetY      = 0,
+        -- Level Text: the unit's level in front of the name, or on its own spot in the name's colour
+        -- (Health Text's host). None = nothing built.
+        levelTextSize      = 10,
+        levelTextPosition  = ns.RF_LEVEL_DEFAULT,  -- "name" ("60 Name"), "nameDiv" ("60 | Name"), "none" or a 9-point spot
+        levelTextOffsetX   = 0,
+        levelTextOffsetY   = 0,
         healthTextMode   = "none",   -- "none", "percent", "number"
         healthTextColorMode   = "custom",  -- "class", "accent", "custom"
         healthTextCustomColor = { r = 1, g = 1, b = 1 },
@@ -564,6 +575,16 @@ local defaults = {
         pingMarkerPosition = "center",
         pingMarkerOffsetX  = 0,
         pingMarkerOffsetY  = 0,
+        -- WoW Forever: Missing Buffs (EUI_RaidFrames_ForeverMissingBuffs.lua).
+        -- Forever-only defaults, absent on every other client.
+        showMissingBuffs     = (EllesmereUI.IS_FOREVER == true) and true or nil,
+        missingBuffsSize     = (EllesmereUI.IS_FOREVER == true) and 22 or nil,
+        missingBuffsPosition = (EllesmereUI.IS_FOREVER == true) and "top" or nil,
+        missingBuffsOffsetX  = (EllesmereUI.IS_FOREVER == true) and 0 or nil,
+        missingBuffsOffsetY  = (EllesmereUI.IS_FOREVER == true) and 0 or nil,
+        -- Its icons' glow (shared prefix schema; 2 = Action Button Glow).
+        missingBuffsGlowType      = (EllesmereUI.IS_FOREVER == true) and 2 or nil,
+        missingBuffsGlowColorMode = (EllesmereUI.IS_FOREVER == true) and "default" or nil,
         showReadyCheck   = true,
         showSummonPending = true,
         showIncomingRez  = true,
@@ -930,12 +951,17 @@ do
         end)
     end
 
-    -- Callable from UpdateVisibility when "Show When: In a Group" is active
-    ns._SuppressBlizzParty = function()
+    -- Callable from UpdateVisibility when "Show When: In a Group" is active.
+    -- early (OnEnable, login window): takes PartyFrame itself down so Blizzard's
+    -- party frames can never stand in for ours (a group joined in combat), without
+    -- latching -- the member frames, which Edit Mode can build later (raid-style),
+    -- are handled the first time our party frames show out of combat.
+    ns._SuppressBlizzParty = function(early)
         if ns._blizzPartySuppressed then return end
-        ns._blizzPartySuppressed = true
+        if not early then ns._blizzPartySuppressed = true end
         if PartyFrame then
             handleFrame(PartyFrame)
+            if early then return end
             if PartyFrame.PartyMemberFramePool then
                 for mf in PartyFrame.PartyMemberFramePool:EnumerateActive() do
                     handleFrame(mf, true)
@@ -1439,6 +1465,22 @@ ns._GetRaidSizeFrameDimensions = function(groupSize)
     return baseW, baseH
 end
 
+-- Show Groups as the frames apply it; every Show Groups reader goes through
+-- here. Hide Groups 5-8 in Mythic Raid (opt-in): inside a Mythic raid
+-- (difficulty 16, groups 1-4 only) groups 5-8 hide on top of Show Groups.
+-- The capped set is ONE reused table: read it at once, never hold it.
+ns._mythicGroups = {}
+ns._VisibleGroups = function()
+    local s = db.profile
+    local vg = s.visibleGroups
+    if not s.mythicRaidHideGroups then return vg end
+    local _, _, difficultyID = GetInstanceInfo()
+    if difficultyID ~= 16 then return vg end
+    local t = ns._mythicGroups
+    for g = 1, 8 do t[g] = g <= 4 and not (vg and vg[g] == false) end
+    return t
+end
+
 -- Effective raid head count for size breakpoints. With "Exclude Hidden Groups
 -- from Size" on (default), members of subgroups hidden via Show Groups are not
 -- counted, so the breakpoint reflects visible members only. Explicitly off:
@@ -1450,7 +1492,7 @@ ns._GetEffectiveRaidSize = function()
     if s.excludeHiddenGroupsFromSize == false then return n end
     -- Subgroups only exist in a raid; party/solo has nothing to exclude.
     if not IsInRaid() then return n end
-    local vg = s.visibleGroups
+    local vg = ns._VisibleGroups()
     if not vg then return n end
     -- Skip the roster walk entirely when no group is actually hidden.
     local anyHidden = false
@@ -1802,6 +1844,18 @@ function ns.CapName(display, s)
     return display
 end
 
+-- WoW Forever Name Format (the Name Text cog, nameFormat): the character name's
+-- first or last word; unset or "full" shows it whole. Nicknames are never
+-- shortened. Defined only on Forever, so elsewhere a name pays one nil test.
+-- On ns (local cap).
+if ns.EllesmereUI.IS_FOREVER then
+    function ns.RF_FormatName(display, s)
+        local mode = s and s.nameFormat
+        if not mode or mode == "full" then return display end
+        return ns.EllesmereUI.ForeverShortName(display, mode)
+    end
+end
+
 -- Fraction of the frame width the NAME text may fill before auto-truncating
 -- (1.0 = full width). Every name-width SetWidth routes through this knob;
 -- health text keeps its own inline budget. On ns (local cap).
@@ -1835,6 +1889,7 @@ local function ResolveDisplayName(unit, applyCap, s)
                 display = dn
             else
                 display = EllesmereUI.WithSurname(name, surname)
+                if ns.RF_FormatName then display = ns.RF_FormatName(display, s) end
             end
         end
     end
@@ -1880,6 +1935,7 @@ local function ResolveDisplayName(unit, applyCap, s)
     if not display then
         if Ambiguate then name = Ambiguate(name, "short") end
         display = EllesmereUI.WithSurname(name, surname)
+        if ns.RF_FormatName then display = ns.RF_FormatName(display, s) end
     end
     -- Cap only the in-frame name (applyCap), not the top name bar banner.
     if applyCap then display = ns.CapName(display, s) end
@@ -1944,21 +2000,58 @@ end
 -- Reserve the Top Name Bar's height from the TOP of a frame and style it. Shared by real buttons
 -- and every preview so they never drift. Layout + appearance only; the caller sets name text +
 -- color. Returns the reserved height (0 when disabled; health re-anchors flush to the top).
-local function LayoutTopNameBar(s, baseH, powerH, healthBar, tnb, tnbBg, tnbText)
+-- Show on Bottom (topNameBarBottom): the bar takes the frame's BOTTOM edge instead. Health starts
+-- flush at the top (same height), and the power bar and the uniform anchor region (health +
+-- power) end on the bar. Those two, and the bar's own edge, are re-anchored only while the option
+-- is or just was on, so the top layout never touches them.
+local function LayoutTopNameBar(s, baseH, powerH, healthBar, tnb, tnbBg, tnbText, powerBar)
     local enabled = s.topNameBarEnabled
     local topBarH = enabled and PixelSnap(s.topNameBarHeight or 20) or 0
+    local bottomY = (enabled and s.topNameBarBottom == true) and topBarH or 0
+    local parent
     if healthBar then
         -- A party portrait's bars' area (EUI_RaidFrames_Portrait.lua), else the frame.
-        local parent = healthBar._euiBarArea or healthBar:GetParent()
+        parent = healthBar._euiBarArea or healthBar:GetParent()
+        local topY = (bottomY > 0) and 0 or -topBarH
         healthBar:ClearAllPoints()
-        healthBar:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, -topBarH)
-        healthBar:SetPoint("TOPRIGHT", parent, "TOPRIGHT", 0, -topBarH)
+        healthBar:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, topY)
+        healthBar:SetPoint("TOPRIGHT", parent, "TOPRIGHT", 0, topY)
         healthBar:SetHeight(PixelSnap(baseH - ns.RF_HealthPowerInset(s, powerH) - topBarH))
+        if bottomY > 0 or (healthBar._euiTnbBottomY or 0) > 0 then
+            local uref = healthBar._euiUniformRef
+            -- Aura containers protect these once anchored: a combat pass leaves
+            -- them for the next one (the stamp stays unchanged).
+            if not (InCombatLockdown() and ((powerBar and powerBar:IsProtected())
+                or (uref and uref:IsProtected()))) then
+                if uref then
+                    uref:ClearAllPoints()
+                    uref:SetPoint("TOPLEFT", healthBar, "TOPLEFT", 0, 0)
+                    uref:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", 0, bottomY)
+                end
+                if powerBar then
+                    powerBar:ClearAllPoints()
+                    powerBar:SetPoint("BOTTOMLEFT", parent, "BOTTOMLEFT", 0, bottomY)
+                    powerBar:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", 0, bottomY)
+                end
+                healthBar._euiTnbBottomY = bottomY
+            end
+        end
     end
     if not tnb then return topBarH end
     if not enabled then
         tnb:Hide()
         return topBarH
+    end
+    if parent and (bottomY > 0 or tnb._euiTnbBottom) then
+        tnb:ClearAllPoints()
+        if bottomY > 0 then
+            tnb:SetPoint("BOTTOMLEFT", parent, "BOTTOMLEFT", 0, 0)
+            tnb:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", 0, 0)
+        else
+            tnb:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, 0)
+            tnb:SetPoint("TOPRIGHT", parent, "TOPRIGHT", 0, 0)
+        end
+        tnb._euiTnbBottom = (bottomY > 0) or nil
     end
     tnb:SetHeight(topBarH)
     if tnbBg then
@@ -1996,13 +2089,23 @@ function ns.RefreshAllNames()
         local d = GetFFD(btn)
         -- Party buttons read through the party proxy so a per-party cap applies.
         local bs = (d and d._isParty) and (ns._scaledPartyProxy or s) or s
+        -- Level Position "Attach to Name" keeps the level in front of the name.
+        local attach = ns.RF_LEVEL_ATTACH[bs.levelTextPosition or ns.RF_LEVEL_DEFAULT]
         if d and d.nameText then
-            d.nameText:SetText(ResolveDisplayName(unit, true, bs))
+            if attach then
+                ns._RFNameWithLevel(d.nameText, ResolveDisplayName(unit, true, bs), unit, attach)
+            else
+                d.nameText:SetText(ResolveDisplayName(unit, true, bs))
+            end
             local nr, ng, nb = GetNameColor(unit, bs)
             d.nameText:SetTextColor(nr, ng, nb)
         end
         if d and d.topNameBarText and bs.topNameBarEnabled then
-            d.topNameBarText:SetText(ResolveDisplayName(unit, false, bs))
+            if attach then
+                ns._RFNameWithLevel(d.topNameBarText, ResolveDisplayName(unit, false, bs), unit, attach)
+            else
+                d.topNameBarText:SetText(ResolveDisplayName(unit, false, bs))
+            end
             local tr, tg, tb = GetTopNameBarColor(unit, bs)
             d.topNameBarText:SetTextColor(tr, tg, tb)
         end
@@ -2366,6 +2469,103 @@ ns._RFPowerTextLife = function(d, unit, gone)
     local pType = d._pwType or UnitPowerType(unit) or 0
     ns.RF_PowerTextInto(d.powerText, d._pwtMode,
         UnitPowerPercent(unit, pType, true, CurveConstants.ScaleTo100), unit, pType)
+end
+
+-------------------------------------------------------------------------------
+--  Level Text: the unit's level in front of the name inside the name text itself
+--  (Attach to Name, "60 Name", the WoW Forever default; or with a divider, "60 | Name"), or
+--  on its own spot on Health Text's host in the name's colour. Nothing exists
+--  while None or attached: the FontString is built the first time a full paint
+--  runs with a spot set. d._lvlOn is true while it shows. UNIT_LEVEL (a level-only
+--  repaint, ns._RFRepaintLevel) is registered only while some view shows the level.
+--  The level is the effective one (scaled content), like the suite's other level
+--  texts. On ns (200-local cap).
+-------------------------------------------------------------------------------
+
+-- The attached positions and their formats: known level, unknown ("??") level.
+ns.RF_LEVEL_ATTACH = {
+    name    = { "%d %s", "?? %s" },
+    nameDiv = { "%d | %s", "?? | %s" },
+}
+
+-- True while the raid, party or extra-frames view shows Level Text.
+function ns._RFLevelWanted()
+    return (ns._scaledProfile.levelTextPosition or ns.RF_LEVEL_DEFAULT) ~= "none"
+        or (ns._scaledPartyProxy.levelTextPosition or ns.RF_LEVEL_DEFAULT) ~= "none"
+        or (ns._scaledExtraProxy.levelTextPosition or ns.RF_LEVEL_DEFAULT) ~= "none"
+end
+
+-- Anchor on Health Text's host with the 9-point scheme; party/extra-aware like the
+-- Power Text anchor, and re-run by every reload pass and the Party Frames kit pass.
+ns._RFAnchorLevelText = function(d)
+    local s = d._isParty and ns._scaledPartyProxy or (d._isExtra and ns._scaledExtraProxy) or ns._scaledProfile
+    local pos = s.levelTextPosition or ns.RF_LEVEL_DEFAULT
+    if pos == "none" or ns.RF_LEVEL_ATTACH[pos] then return end
+    ns.AnchorRFText(d.levelText, ns.RF_BarHost(d.health, s), pos,
+        s.levelTextOffsetX or 0, s.levelTextOffsetY or 0)
+end
+
+-- The level as text: a secret level goes straight to the setter (never compared),
+-- "??" for a unit too far above to read, blank while it is not known yet.
+ns._RFLevelInto = function(fs, unit)
+    local lvl = UnitEffectiveLevel(unit)
+    if issecretvalue(lvl) then
+        fs:SetFormattedText("%d", lvl)
+    elseif not lvl or lvl == 0 then
+        fs:SetText("")
+    elseif lvl < 0 then
+        fs:SetText("??")
+    else
+        fs:SetFormattedText("%d", lvl)
+    end
+end
+
+-- The level the previews show on every sample member: the player's own.
+ns._RFPreviewLevel = function()
+    local lvl = UnitEffectiveLevel("player")
+    if issecretvalue(lvl) or not lvl or lvl <= 0 then return 60 end
+    return lvl
+end
+
+-- Attach to Name: the name text in an attached position's format (fmt, from
+-- RF_LEVEL_ATTACH). The name (possibly secret) and the level only ever reach the
+-- format setter; an unknown level, or a name not known yet (empty), leaves the
+-- name alone.
+ns._RFNameWithLevel = function(fs, name, unit, fmt)
+    local lvl = UnitEffectiveLevel(unit)
+    local nameKnown = issecretvalue(name) or (name ~= nil and name ~= "")
+    if not nameKnown then
+        fs:SetText(name)
+    elseif issecretvalue(lvl) then
+        fs:SetFormattedText(fmt[1], lvl, name)
+    elseif not lvl or lvl == 0 then
+        fs:SetText(name)
+    elseif lvl < 0 then
+        fs:SetFormattedText(fmt[2], name)
+    else
+        fs:SetFormattedText(fmt[1], lvl, name)
+    end
+end
+
+-- The full paint's share for the own spot: shown or hidden by position (built on first
+-- need), filled, and coloured as the name (r, g, b).
+ns._RFLevelText = function(d, s, unit, r, g, b)
+    local pos = s.levelTextPosition or ns.RF_LEVEL_DEFAULT
+    if pos == "none" or ns.RF_LEVEL_ATTACH[pos] then
+        if d._lvlOn then d.levelText:Hide(); d._lvlOn = nil end
+        return
+    end
+    local fs = d.levelText
+    if not fs then
+        fs = d.textCarrier:CreateFontString(nil, "OVERLAY")
+        ApplyFont(fs, s.levelTextSize or 10)
+        fs:SetWordWrap(false)
+        d.levelText = fs
+        ns._RFAnchorLevelText(d)
+    end
+    if not d._lvlOn then fs:Show(); d._lvlOn = true end
+    ns._RFLevelInto(fs, unit)
+    fs:SetTextColor(r, g, b)
 end
 
 -------------------------------------------------------------------------------
@@ -4598,10 +4798,14 @@ local function StyleButton(button)
             local d = GetFFD(self)
             -- Extra Frames duplicates never enter the real routing maps (one button per unit);
             -- XF_Apply owns ns._xfUnitToButton. The repaint/range work below is 1:1.
+            -- A set flagged hidden stays out of the maps: its headers can still
+            -- re-process until the visibility driver hides them (the next tick), and
+            -- a hidden button would win the routing over the set actually shown.
             if d._isExtra then
                 -- map owned by XF_Apply
-            elseif d._isParty then ns._partyUnitToButton[u] = self
-            else unitToButton[u] = self end
+            elseif d._isParty then
+                if ns._partyFramesVisible then ns._partyUnitToButton[u] = self end
+            elseif ns._raidFramesVisible then unitToButton[u] = self end
             -- The secure header re-sets EVERY child's unit on EVERY re-process (each
             -- roster/name event, each sort attribute change), so most fires are a
             -- same-occupant re-confirm: same token AND same person as the last full
@@ -5210,15 +5414,32 @@ ns._PaintButtonTail = function(button, d, s, unit)
     local EllesmereUI = ns.EllesmereUI  -- upvalue read, not a global read (see taint note at top)
 
     -- Name (visibility owned by AnchorNameText, which hides it when the Top Name Bar is enabled)
+    -- Level Position "Attach to Name" (either format) puts the level in front of the name,
+    -- in both name texts.
+    local lvlPos = s.levelTextPosition or ns.RF_LEVEL_DEFAULT
+    local lvlAttach = ns.RF_LEVEL_ATTACH[lvlPos]
     if d.nameText then
-        d.nameText:SetText(ResolveDisplayName(unit, true, s))
+        if lvlAttach then
+            ns._RFNameWithLevel(d.nameText, ResolveDisplayName(unit, true, s), unit, lvlAttach)
+        else
+            d.nameText:SetText(ResolveDisplayName(unit, true, s))
+        end
         local nr, ng, nb = GetNameColor(unit, s)
         d.nameText:SetTextColor(nr, ng, nb)
     end
 
+    -- Level Text on its own spot, in the name's colour. None or attached, never shown = no call.
+    if d._lvlOn or (lvlPos ~= "none" and not lvlAttach) then
+        ns._RFLevelText(d, s, unit, GetNameColor(unit, s))
+    end
+
     -- Top Name Bar text (unit name + class/custom color); size/anchor/visibility are LayoutTopNameBar's.
     if d.topNameBarText and s.topNameBarEnabled then
-        d.topNameBarText:SetText(ResolveDisplayName(unit, false, s))
+        if lvlAttach then
+            ns._RFNameWithLevel(d.topNameBarText, ResolveDisplayName(unit, false, s), unit, lvlAttach)
+        else
+            d.topNameBarText:SetText(ResolveDisplayName(unit, false, s))
+        end
         local tr, tg, tb = GetTopNameBarColor(unit, s)
         d.topNameBarText:SetTextColor(tr, tg, tb)
     end
@@ -5363,6 +5584,28 @@ ns._PaintButtonTail = function(button, d, s, unit)
 
     -- Threat highlight (aggro): the inner border (size 0 = off) or the Color Custom Borders recolor
     ns.RF_PaintThreat(d, s, unit)
+end
+
+-- UNIT_LEVEL: only the level repaints -- in front of the name (both name texts)
+-- or on its own spot, colours untouched; a button whose view shows no level is
+-- left alone. On ns (200-local cap).
+ns._RFRepaintLevel = function(button)
+    local unit = button:GetAttribute("unit")
+    if not unit or not UnitExists(unit) then return end
+    local d = GetFFD(button)
+    if not d.styled then return end
+    local s = d._isParty and ns._scaledPartyProxy or (d._isExtra and ns._scaledExtraProxy) or ns._scaledProfile
+    local lvlAttach = ns.RF_LEVEL_ATTACH[s.levelTextPosition or ns.RF_LEVEL_DEFAULT]
+    if lvlAttach then
+        if d.nameText then
+            ns._RFNameWithLevel(d.nameText, ResolveDisplayName(unit, true, s), unit, lvlAttach)
+        end
+        if d.topNameBarText and s.topNameBarEnabled then
+            ns._RFNameWithLevel(d.topNameBarText, ResolveDisplayName(unit, false, s), unit, lvlAttach)
+        end
+    elseif d._lvlOn then
+        ns._RFLevelInto(d.levelText, unit)
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -6728,7 +6971,7 @@ FB.Anchor = function(owner)
             -- The boss group slots in before the first / after the last group that is BOTH enabled
             -- in Show Groups AND populated. With none populated (not in a raid yet), fall back to
             -- the Show Groups bounds alone.
-            local vg = s.visibleGroups or {}
+            local vg = ns._VisibleGroups() or {}
             -- One reused set across calls (the roster edges anchor every group).
             local occupied = FB.occ
             if occupied then wipe(occupied) else occupied = {}; FB.occ = occupied end
@@ -7262,6 +7505,10 @@ XF.Layout = function()
             ApplyFont(d.powerText, xs.powerTextSize or 8)
             ns._RFAnchorPowerText(d)
         end
+        if d.levelText then
+            ApplyFont(d.levelText, xs.levelTextSize or 10)
+            ns._RFAnchorLevelText(d)
+        end
         if d.healAbsorbText then
             ApplyFont(d.healAbsorbText, xs.healAbsorbTextSize or 9)
             if d.AnchorHealAbsorbText then d.AnchorHealAbsorbText() end
@@ -7298,6 +7545,7 @@ XF.Layout = function()
             if d.AnchorCombatIcon then d.AnchorCombatIcon() end
         end
         if d.pingFrame then ns._RFAnchorPing(d) end
+        if ns.RF_FvMissingAnchor then ns.RF_FvMissingAnchor(b, d) end
     end
 end
 
@@ -7423,6 +7671,8 @@ XF.EnsureBuilt = function(count)
                 if unit and unit == b:GetAttribute("unit") then
                     UpdateButton(b)
                 end
+            elseif event == "UNIT_LEVEL" then
+                ns._RFRepaintLevel(b)
             else -- UNIT_NAME_UPDATE / UNIT_CONNECTION
                 UpdateButton(b)
                 if event == "UNIT_CONNECTION" then ns._UpdateButtonRange(unit, b) end
@@ -7503,6 +7753,10 @@ function ns.XF_Apply()
             -- UNIT_FLAGS is opt-in: extra frames mirror the raid combat-icon toggle.
             if db.profile.showCombatIndicator then
                 t:RegisterUnitEvent("UNIT_FLAGS", unit)
+            end
+            -- UNIT_LEVEL is opt-in too: only while a view shows Level Text.
+            if ns._RFLevelWanted() then
+                t:RegisterUnitEvent("UNIT_LEVEL", unit)
             end
             t:RegisterEvent("READY_CHECK_CONFIRM")
             t:RegisterEvent("PLAYER_FLAGS_CHANGED")
@@ -8530,10 +8784,11 @@ end
 -- The pet header's parent hides it in pet battles and, unless your pet shows solo, outside a group.
 -- A visibility driver writes the statehidden attribute on its frame every 0.2 s; on the header that
 -- attribute change re-runs its whole update, so the driver sits on this plain parent. Re-registered
--- only when the macro changes.
+-- only when the macro changes. Grouped = a raid1/party1 unit exists, which stays live in combat
+-- (see ns._RF_VIS_MACROS).
 -- solo: the header's showSolo. OOC only.
 PF.SetHider = function(solo)
-    local m = solo and "[petbattle] hide; show" or "[petbattle][nogroup] hide; show"
+    local m = solo and "[petbattle] hide; show" or "[petbattle] hide; [@raid1,exists][@party1,exists][group] show; hide"
     if PF.hiderMacro ~= m then
         RegisterStateDriver(PF.hider, "visibility", m)
         PF.hiderMacro = m
@@ -8552,7 +8807,7 @@ end
 -- Show Groups as a groupFilter: nil with every group on, one cached string per group set.
 PF.gf = {}
 PF.RaidGroupFilter = function()
-    local vg = db.profile.visibleGroups
+    local vg = ns._VisibleGroups()  -- Mythic 5-8 aware (read-only)
     if not vg then return nil end
     local mask = 0
     for gi = 1, 8 do
@@ -9776,10 +10031,15 @@ local function ApplySortToHeaders()
     local s = db.profile
     local sortByRole = s.sortMode == "ROLE"
     local roleOrder = s.roleOrder or { "TANK", "HEALER", "DAMAGER" }
+    -- A raid set the group state hides takes no nameList (FrameSort, Role +
+    -- Class, Self Position): a nameList is also a filter, and the visibility
+    -- driver can show the set mid-fight, when no list can be rebuilt, so a stale
+    -- list would drop every member it does not name. The shown pass applies them.
+    local live = ns._RFVisWanted()
     -- Sort By = FrameSort: its list owns the order (Self Position included);
     -- with FrameSort absent, or no list yet, the Group sort runs (Prioritize
     -- Class and Self Position included).
-    local fsRank = (s.sortMode == "FRAMESORT") and ns._FrameSortRanks(not ns._fsFromProvider) or nil
+    local fsRank = live and (s.sortMode == "FRAMESORT") and ns._FrameSortRanks(not ns._fsFromProvider) or nil
     -- Prioritize Class (FrameSort's list wins). Group sort + class runs on the
     -- headers' own CLASS grouping (Class Order, then name), so membership
     -- stays live in combat. A header groups by one key only, so Role + Class
@@ -9787,8 +10047,8 @@ local function ApplySortToHeaders()
     -- member who joins mid-fight appears at the regen rebuild.
     local classOn = s.prioritizeClass == true and not fsRank and IsInRaid()
     local classNative = classOn and not sortByRole
-    local classLists = classOn and sortByRole
-    local selfOn = (s.showSelfFirst or s.showSelfLast) and IsInRaid()
+    local classLists = live and classOn and sortByRole
+    local selfOn = live and (s.showSelfFirst or s.showSelfLast) and IsInRaid()
     local selfLast = s.showSelfLast
 
     local baseGroupBy, baseSortMethod, baseGroupingOrder
@@ -9840,14 +10100,14 @@ local function ApplySortToHeaders()
         -- the same whole-raid list shape; Group + Class alone runs native.
         local mergedList
         if fsRank then
-            mergedList = ns._BuildFrameSortRaidLists(fsRank, true, s.visibleGroups)
+            mergedList = ns._BuildFrameSortRaidLists(fsRank, true, ns._VisibleGroups())
         end
         if not mergedList and (classLists or (classNative and selfOn)) then
-            mergedList = ns._BuildRaidClassLists(true, s.visibleGroups, sortByRole, roleOrder,
+            mergedList = ns._BuildRaidClassLists(true, ns._VisibleGroups(), sortByRole, roleOrder,
                 s.classOrder, s.showSelfFirst, selfLast)
         end
         if not mergedList and selfOn then
-            mergedList = ns._BuildMergedSelfNameList(sortByRole, roleOrder, selfLast, s.visibleGroups)
+            mergedList = ns._BuildMergedSelfNameList(sortByRole, roleOrder, selfLast, ns._VisibleGroups())
         end
         if mergedList then
             applySortTo(ns._flatHeader, nil, "NAMELIST", "", mergedList, nil)
@@ -9935,6 +10195,12 @@ ns._BuildHeaderSet = function(merge)
     local csInit = PixelSnap(s.cellSpacing or 2)
     local initPoint, initXOff, initYOff = ns._RFHeaderPoint(initUnitGrowth, csInit)
 
+    -- A header makes children only while visible (IsVisible walks the parent
+    -- chain): a set built with the container hidden (a Merge Groups flip while
+    -- solo or in a party) shows the container around the pre-spawn below.
+    local hid = not containerFrame:IsShown()
+    if hid then containerFrame:Show() end
+
     if not merge then
         -----------------------------------------------------------
         --  8 separated group headers (one per raid group)
@@ -10017,6 +10283,7 @@ ns._BuildHeaderSet = function(merge)
             end
         end
     end
+    if hid then containerFrame:Hide() end
 
     -- Freshly built headers need the current sort attributes.
     ApplySortToHeaders()
@@ -10084,7 +10351,7 @@ function ns._UpdateGroupNumbers()
     local unitGrowth = s.unitGrowth or "DOWN"
     local activeOv = ns._activeTierOverride
     if activeOv and activeOv.unitGrowth then unitGrowth = activeOv.unitGrowth end
-    local vg = s.visibleGroups or { true, true, true, true, true, true, false, false }
+    local vg = ns._VisibleGroups() or { true, true, true, true, true, true, false, false }
     local size = s.groupNumberSize or 10
     local gc = s.groupNumberColor or {}
     local ox = s.groupNumberOffsetX or 0
@@ -10170,7 +10437,9 @@ ns._LayoutGroupsImpl = function()
     end
 
     -- Build visible groups filter string from settings
-    local vg = s.visibleGroups or { true, true, true, true, true, true, false, false }
+    local vg = ns._VisibleGroups() or { true, true, true, true, true, true, false, false }
+    -- Whether this layout applied the Mythic cap (the zone and difficulty checks compare against it).
+    ns._rfLaidMythic = vg == ns._mythicGroups
 
     if merged then
         ---------------------------------------------------------------
@@ -10282,8 +10551,11 @@ ns._LayoutGroupsImpl = function()
         -- groups close ranks (1/2/3/6 instead of a gap at 4/5). Real frames
         -- only; needs live raid roster data, so skipped outside a raid
         -- (GetRaidRosterInfo returns nil there -> would hide every group).
+        -- Skipped while the group state hides the set too: a hidden header
+        -- ignores the roster, so one hidden here would stay empty if the
+        -- visibility driver shows the set mid-fight (the shown pass collapses).
         local occupied
-        if s.hideEmptyGroups ~= false and IsInRaid() then
+        if s.hideEmptyGroups ~= false and IsInRaid() and ns._RFVisWanted() then
             occupied = {}
             for ri = 1, GetNumGroupMembers() or 0 do
                 local _, _, sub = GetRaidRosterInfo(ri)
@@ -10335,6 +10607,9 @@ ns._LayoutGroupsImpl = function()
 
     -- Apply sort after all headers are positioned
     ApplySortToHeaders()
+    -- Which layout the headers now carry (shown: full; hidden: native), for
+    -- UpdateVisibility to re-lay them when the set shows or hides.
+    ns._rfRaidLaidVis = ns._RFVisWanted()
 
     -- Container size based on 4 groups for unlock mode mover. Merged mode's
     -- columnAnchorPoint is always perpendicular to unitGrowth (colAnchor above),
@@ -10432,6 +10707,9 @@ local function ReloadFrames(skipButtons)
     -- Keep UNIT_FLAGS registration in lockstep with the combat-icon toggle so a
     -- disabled option listens for nothing (runs no event code).
     if ns.UpdateCombatEventRegistration then ns.UpdateCombatEventRegistration() end
+    -- Hide Groups 5-8 in Mythic Raid hears difficulty switches only while on.
+    if db.profile.mythicRaidHideGroups then eventFrame:RegisterEvent("PLAYER_DIFFICULTY_CHANGED")
+    else eventFrame:UnregisterEvent("PLAYER_DIFFICULTY_CHANGED") end
     -- Rebuild dispel-color curves so custom-color edits take effect immediately.
     if ns._RebuildDispelCurves then ns._RebuildDispelCurves() end
     -- Recalculate active tier from current group size + overrides
@@ -10490,7 +10768,7 @@ local function ReloadFrames(skipButtons)
 
         -- Health bar height/anchor + Top Name Bar. The helper reserves the top
         -- bar's height from the top of the health area and styles the bar.
-        LayoutTopNameBar(s, bh, powerH, d.health, d.topNameBar, d.topNameBarBg, d.topNameBarText)
+        LayoutTopNameBar(s, bh, powerH, d.health, d.topNameBar, d.topNameBarBg, d.topNameBarText, d.power)
         if d.health then
             d.health:SetStatusBarTexture(texPath)
             d.health:GetStatusBarTexture():SetHorizTile(false)
@@ -10545,6 +10823,13 @@ local function ReloadFrames(skipButtons)
             d.powerText:Hide(); d._pwtMode = nil
             ApplyFont(d.powerText, s.powerTextSize or 8)
             ns._RFAnchorPowerText(d)
+        end
+
+        -- Level text (exists once a position has needed it): restyled; the full paint
+        -- that follows shows or hides it by position.
+        if d.levelText then
+            ApplyFont(d.levelText, s.levelTextSize or 10)
+            ns._RFAnchorLevelText(d)
         end
 
         -- Heal absorb text
@@ -10602,6 +10887,7 @@ local function ReloadFrames(skipButtons)
 
         -- Ping marker size + position (overlay exists only after a first ping)
         if d.pingFrame then ns._RFAnchorPing(d) end
+        if ns.RF_FvMissingAnchor then ns.RF_FvMissingAnchor(btn, d) end
 
         -- Border
         if d.UpdateBorder then d.UpdateBorder() end
@@ -10634,6 +10920,8 @@ end
 ns.ReloadFrames = ReloadFrames
 ns.PixelSnap = PixelSnap
 ns._allButtons = allButtons
+-- The raid unit map (RebuildUnitMap wipes it in place, so this stays live).
+ns._raidUnitToButton = unitToButton
 
 -- Global Dark Mode master: RF stores Dark Mode as a fill-color MODE
 -- (healthColorMode == "dark"), not a boolean -- enabling remembers the prior
@@ -10789,6 +11077,7 @@ ns._ResizePartyButtons = function(w, h)
                 if d.nameText then ApplyFont(d.nameText, pp.nameSize or 10) end
                 if d.healthText then ApplyFont(d.healthText, pp.healthTextSize or 9) end
                 if d.powerText then ApplyFont(d.powerText, pp.powerTextSize or 8) end
+                if d.levelText then ApplyFont(d.levelText, pp.levelTextSize or 10) end
                 if d.healAbsorbText then ApplyFont(d.healAbsorbText, pp.healAbsorbTextSize or 9) end
                 if d.statusText then ApplyFont(d.statusText, pp.statusTextSize or 14) end
             end
@@ -11459,12 +11748,81 @@ ns._SmallRaidGroup = function()
     return 1
 end
 
+-- Which set the group state shows (raid, party): raid frames in a raid, party
+-- frames in a party (arena and Small Raid included), each set's Show When Solo
+-- outside a group. ns._RF_VIS_MACROS spells the same rule as macro conditions.
+ns._RFVisWanted = function()
+    local s = db.profile
+    if not IsInGroup() then
+        return s.showWhenSolo and true or false, s.partyShowWhenSolo and true or false
+    end
+    if IsInRaid() and not ns._PartyInRaid() then return true, false end
+    return false, true
+end
+
+-- Secure visibility drivers on both containers: the containers are implicitly
+-- protected (secure headers inside), so only secure code can show or hide them
+-- in combat, and a driver re-checks its macro every 0.2 s on its own. A group
+-- joined, or a party turned raid, mid-fight then shows its frames at once.
+-- Macro per [mode][that set's Show When Solo]; the mode is fixed out of combat.
+-- Group state reads unit existence: the [group] conditions keep the state from
+-- before combat until combat ends, so a group joined mid-fight reads as solo
+-- there, while unit tokens follow the roster at once. raid1 exists exactly in
+-- a raid; party1 in a party with another member; [group] stays OR'd in so a
+-- group with no other member counts as grouped, as IsInGroup() does.
+-- Small Raid: raid tokens run contiguously from raid1 and exist only in a raid,
+-- so raid10 exists exactly when a raid holds 10 or more members (the
+-- GetNumGroupMembers() < 10 rule); a party never reaches it.
+-- Arena has no macro condition: it is taken at the zone-in pass.
+ns._RF_VIS_MACROS = {
+    raid = {
+        group = { [true] = "[@raid1,exists] show; [@party1,exists][group] hide; show", [false] = "[@raid1,exists] show; hide" },
+        small = { [true] = "[@raid10,exists] show; [@raid1,exists][@party1,exists][group] hide; show", [false] = "[@raid10,exists] show; hide" },
+        arena = { [true] = "[@raid1,exists][@party1,exists][group] hide; show", [false] = "hide" },
+    },
+    party = {
+        group = { [true] = "[@raid1,exists] hide; show", [false] = "[@raid1,exists] hide; [@party1,exists][group] show; hide" },
+        small = { [true] = "[@raid10,exists] hide; show", [false] = "[@raid10,exists] hide; [@raid1,exists][@party1,exists][group] show; hide" },
+        arena = { [true] = "show", [false] = "[@raid1,exists][@party1,exists][group] show; hide" },
+    },
+}
+
+-- Registers each container's macro, only when its text changes (driver
+-- registration is a protected action: out of combat, or the login window).
+ns._RFSyncVisDrivers = function()
+    local pc = ns._partyContainerFrame
+    if not containerFrame or not pc or InCombatLockdown() then return end
+    local s = db.profile
+    local M = ns._RF_VIS_MACROS
+    local mode = (ns._InArena() and "arena") or ((s.partySmallRaid == true) and "small") or "group"
+    local r = M.raid[mode][s.showWhenSolo and true or false]
+    local p = M.party[mode][s.partyShowWhenSolo and true or false]
+    if ns._rfRaidVisMacro ~= r then
+        RegisterStateDriver(containerFrame, "visibility", r)
+        ns._rfRaidVisMacro = r
+    end
+    if ns._rfPartyVisMacro ~= p then
+        RegisterStateDriver(pc, "visibility", p)
+        ns._rfPartyVisMacro = p
+    end
+end
+
+-- A set that hides keeps its buttons' units (a hidden header ignores the
+-- roster) while its events stop routing: forget each painted occupant so the
+-- next assignment, in combat too, takes the full repaint.
+ns._RFForgetOccupants = function(list)
+    for i = 1, #list do
+        local d = FFD[list[i]]
+        if d then d._lastGuid = nil end
+    end
+end
+
 local function UpdateVisibility()
     if not containerFrame then return end
     if InCombatLockdown() then return end
 
-    -- Preview overrides all visibility logic -- container stays shown,
-    -- real buttons stay suppressed, no state changes.
+    -- Preview overrides all visibility logic -- real buttons stay suppressed
+    -- (alpha), no state changes; the preview close re-runs this.
     if previewActive then return end
 
     -- Defensive: re-assert full opacity unless a preview is intentionally
@@ -11480,15 +11838,7 @@ local function UpdateVisibility()
     -- group there, but we show our party frames instead (see
     -- _UpdatePartyVisibility), so the raid container must stay hidden even
     -- though IsInRaid() returns true.
-    local partyMode = ns._PartyInRaid()
-    local visible = false
-    if IsInRaid() and not partyMode then
-        visible = true
-    elseif IsInGroup() then
-        visible = false  -- party frames handle group visibility (incl. party-in-raid)
-    else
-        visible = s.showWhenSolo
-    end
+    local visible = ns._RFVisWanted()
     local wasVisible = framesVisible
     framesVisible = visible
     ns._raidFramesVisible = visible  -- mirror for readers outside this file (the FrameSort provider)
@@ -11512,12 +11862,18 @@ local function UpdateVisibility()
         ns._flatHeader:SetAttribute("showSolo", wantSolo)
     end
 
+    -- The driver decides the same way; synced first so the two agree this frame
+    -- (readers such as the tier offset check IsShown right after).
+    ns._RFSyncVisDrivers()
+    containerFrame:SetShown(visible)
     if visible then
-        containerFrame:Show()
         -- Suppress Blizzard party frames when we're showing for groups
         if (IsInGroup() and not IsInRaid()) and ns._SuppressBlizzParty then
             ns._SuppressBlizzParty()
         end
+        -- Headers last laid out hidden (native order) take the shown layout
+        -- before the rebuild reads their buttons.
+        if ns._rfRaidLaidVis ~= true then LayoutGroups() end
         -- Skip heavy refresh at combat end if roster didn't change. Per-unit events
         -- (UNIT_HEALTH, UNIT_AURA, etc.) kept buttons in sync during combat, so a full
         -- rebuild is only needed when the roster changed or we transition from hidden
@@ -11541,10 +11897,17 @@ local function UpdateVisibility()
             StartGhostTicker()
         end
     else
-        containerFrame:Hide()
         StopRangeTicker()
         StopGhostTicker()
+        if wasVisible then ns._RFForgetOccupants(allButtons) end
         wipe(unitToButton)
+        -- A hidden set runs native order and keeps every group header up, so the
+        -- driver can show it mid-fight with every member in place.
+        if ns._rfRaidLaidVis ~= false then
+            LayoutGroups()
+            -- The dormant container's footprint (see _ApplyTierOffset).
+            if ns._ApplyTierOffset then ns._ApplyTierOffset() end
+        end
     end
 end
 ns.UpdateVisibility = UpdateVisibility
@@ -11759,8 +12122,12 @@ local function OnEvent(self, event, arg1, ...)
             -- Pet frames: flushed once by the roster pass below, or at combat end.
             ns.PF_MarkDirty()
         end
-        if inCombat then
+        -- InCombatLockdown too: a /reload in combat never sees PLAYER_REGEN_DISABLED.
+        if inCombat or InCombatLockdown() then
             ns._rosterDirtyInCombat = true
+            -- The visibility drivers show and hide the containers on their own;
+            -- bring the Lua side (event gates, maps, tickers) in step first.
+            ns._RFCombatVisEdge()
             -- Check if size tier changed during combat (deferred to REGEN)
             local numMembers = ns._GetEffectiveRaidSize()
             if numMembers > 0 then
@@ -11803,6 +12170,11 @@ local function OnEvent(self, event, arg1, ...)
                         end
                     end
                 end
+                -- The self button's unit never changes, so no assignment remaps it
+                -- when the driver shows the container a tick after this pass; its
+                -- own shown flag (set out of combat) says whether it owns the player.
+                local sb = ns._partySelfButton
+                if sb and sb:IsShown() then ns._partyUnitToButton.player = sb end
             end
             -- Combat zone-ins deliver GROUP_ROSTER_UPDATE in storms; unit maps stay
             -- per-fire (routing must be correct immediately) but the paint coalesces to
@@ -11856,16 +12228,15 @@ local function OnEvent(self, event, arg1, ...)
             ns._visForceRebuild = nil
             UpdateVisibility()
             ns._UpdatePartyVisibility()
+            -- A hidden->visible transition needs nothing more here: UpdateVisibility
+            -- already laid the headers out and ran the full rebuild (RebuildUnitMap +
+            -- UpdateAllButtons).
             if framesVisible then
                 if tierChanged then
                     -- Tier changed: full reload (recalculates _activeSizeW/H, restyles).
                     ReloadFrames()
                     if ns.UpdatePowerEventRegistration then ns.UpdatePowerEventRegistration() end
-                elseif not wasVis then
-                    -- Hidden->visible transition: UpdateVisibility already ran the
-                    -- full rebuild (RebuildUnitMap + UpdateAllButtons); just lay out.
-                    LayoutGroups()
-                else
+                elseif wasVis then
                     -- Already visible, same tier: light refresh only. Aura
                     -- full-rescans are intentionally skipped (hook + UNIT_AURA
                     -- keep them current); the per-button pass repaints only what
@@ -12005,6 +12376,13 @@ local function OnEvent(self, event, arg1, ...)
                 end
             end)
         end
+    elseif event == "UNIT_LEVEL" then
+        -- Level Text only (registered while a view shows it): the level alone repaints,
+        -- on its spot or in front of the name.
+        local btn = unitToButton[arg1]
+        if btn then ns._RFRepaintLevel(btn) end
+        btn = ns._partyUnitToButton[arg1]
+        if btn then ns._RFRepaintLevel(btn) end
     elseif event == "UNIT_THREAT_LIST_UPDATE" or event == "UNIT_THREAT_SITUATION_UPDATE" then
         local btn = unitToButton[arg1] or ns._partyUnitToButton[arg1]
         if btn then
@@ -12145,6 +12523,16 @@ local function OnEvent(self, event, arg1, ...)
             end
             if ns._UpdateRoleIcons then ns._UpdateRoleIcons() end
         end
+    elseif event == "PLAYER_DIFFICULTY_CHANGED" then
+        -- Hide Groups 5-8 in Mythic Raid (heard only while on): a switch inside
+        -- the raid (e.g. Heroic -> Mythic) against the set the layout applied.
+        if (ns._VisibleGroups() == ns._mythicGroups) ~= (ns._rfLaidMythic == true) then
+            if InCombatLockdown() then
+                ns._sizeTierDirtyInCombat = true  -- REGEN runs the full reload
+            elseif framesVisible then
+                ReloadFrames()
+            end
+        end
     elseif event == "PLAYER_ENTERING_WORLD" then
         -- Re-sync the boss-combat flag on load. IsEncounterInProgress() still
         -- reports an active encounter after a mid-fight /reload or zone (where
@@ -12170,6 +12558,9 @@ local function OnEvent(self, event, arg1, ...)
                 ns._sizeTierDirtyInCombat = true
                 return
             end
+            -- Entering or leaving a Mythic raid with Hide Groups 5-8 on changes which groups
+            -- show even when the tier holds; read before UpdateVisibility can re-lay them.
+            local mythicChanged = (ns._VisibleGroups() == ns._mythicGroups) ~= (ns._rfLaidMythic == true)
             UpdateVisibility()
             ns._UpdatePartyVisibility()
             if framesVisible then
@@ -12189,7 +12580,7 @@ local function OnEvent(self, event, arg1, ...)
                     local _, newOv = ns._RFResolveTierOverride(numMembers)
                     if newOv ~= ns._activeTierOverride then tierChanged = true end
                 end
-                if tierChanged then
+                if tierChanged or mythicChanged then
                     ReloadFrames()
                 else
                     RangeUpdate()
@@ -12287,8 +12678,9 @@ do
             "powerUniformAnchors", "extendHealthBehindPower",
         },
         textDisplay = {
-            "nameSize", "nameMaxLength", "nameColorMode", "nameCustomColor",
+            "nameSize", "nameMaxLength", "nameFormat", "nameColorMode", "nameCustomColor",
             "namePosition", "nameOffsetX", "nameOffsetY",
+            "levelTextSize", "levelTextPosition", "levelTextOffsetX", "levelTextOffsetY",
             "healthTextMode", "healthTextColorMode", "healthTextCustomColor",
             "healthTextSize", "healthTextPosition", "healthTextOffsetX", "healthTextOffsetY",
             "healAbsorbTextMode", "healAbsorbTextColorMode", "healAbsorbTextCustomColor",
@@ -12302,6 +12694,11 @@ do
             "showRoleForTank", "showRoleForHealer", "showRoleForDPS",
             "showRaidMarker", "raidMarkerSize", "raidMarkerPosition", "raidMarkerOffsetX", "raidMarkerOffsetY",
             "showPingMarker", "pingMarkerSize", "pingMarkerPosition", "pingMarkerOffsetX", "pingMarkerOffsetY",
+            "showMissingBuffs", "missingBuffsSize", "missingBuffsPosition", "missingBuffsOffsetX", "missingBuffsOffsetY",
+            "missingBuffsFort", "missingBuffsMark", "missingBuffsSpirit", "missingBuffsThorns", "missingBuffsBlessing",
+            "missingBuffsGlowType", "missingBuffsGlowColorMode", "missingBuffsGlowR", "missingBuffsGlowG", "missingBuffsGlowB",
+            "missingBuffsGlowLines", "missingBuffsGlowThickness", "missingBuffsGlowSpeed", "missingBuffsGlowBackground",
+            "missingBuffsGlowBackgroundR", "missingBuffsGlowBackgroundG", "missingBuffsGlowBackgroundB",
             "showReadyCheck", "showSummonPending", "showIncomingRez",
             "readyCheckSize", "readyCheckPosition", "readyCheckOffsetX", "readyCheckOffsetY",
             "statusTextPosition", "statusTextOffsetX", "statusTextOffsetY", "statusTextSize", "statusTextColor",
@@ -12337,6 +12734,7 @@ do
             "topNameBarBgColor", "topNameBarBgOpacity",
             "topNameBarTextSize", "topNameBarTextColorMode", "topNameBarTextColor",
             "topNameBarTextOffsetX", "topNameBarTextOffsetY", "topNameBarTextAlign",
+            "topNameBarBottom",
         },
         rangeTooltip = {
             "oorAlpha", "showTooltip", "tooltipMode", "frameStrata",
@@ -12465,20 +12863,23 @@ ns._xfBmScale = 1
 local INDICATOR_SCALE_KEYS = {}
 for _, k in ipairs({
     -- Font sizes
-    "nameSize", "healthTextSize", "healAbsorbTextSize", "statusTextSize", "powerTextSize",
+    "nameSize", "healthTextSize", "healAbsorbTextSize", "statusTextSize", "powerTextSize", "levelTextSize",
     "debuffStacksTextSize", "debuffDurTextSize", "defDurTextSize",
     -- Icon sizes
     "roleIconSize", "leaderIconSize", "raidMarkerSize", "combatIndicatorSize", "pingMarkerSize",
+    "missingBuffsSize",
     "debuffSize", "defSize", "dispellableDebuffSize",
     -- Offsets
     "nameOffsetX", "nameOffsetY",
     "healthTextOffsetX", "healthTextOffsetY",
     "healAbsorbTextOffsetX", "healAbsorbTextOffsetY",
     "powerTextOffsetX", "powerTextOffsetY",
+    "levelTextOffsetX", "levelTextOffsetY",
     "statusTextOffsetX", "statusTextOffsetY",
     "roleIconOffsetX", "roleIconOffsetY",
     "leaderIconOffsetX", "leaderIconOffsetY",
     "raidMarkerOffsetX", "raidMarkerOffsetY",
+    "missingBuffsOffsetX", "missingBuffsOffsetY",
     "combatIndicatorOffsetX", "combatIndicatorOffsetY",
     "debuffOffsetX", "debuffOffsetY",
     "dispellableDebuffOffsetX", "dispellableDebuffOffsetY",
@@ -12661,6 +13062,8 @@ function ns._RefreshProxyModes()
     -- invalidate every button's absorb value-memo (and the gen-gated
     -- settings pushes inside UpdateAbsorb).
     ns._absorbGen = (ns._absorbGen or 0) + 1
+    -- Level Text's event follows the views (defined once the unit trackers exist).
+    if ns._RFSyncLevelRegistration then ns._RFSyncLevelRegistration() end
 end
 ns._RefreshProxyModes()
 
@@ -12755,11 +13158,13 @@ ns._CreatePartyHeader = function()
 
     -- Pre-create 5 buttons. Container must be visible for SecureGroupHeaderTemplate to
     -- process children (IsVisible checks parent chain). Show temporarily, then hide.
+    -- The header itself stays shown from here on: only the container hides (its
+    -- visibility driver can then show the party frames in combat, the header
+    -- re-reading the roster on that show).
     ns._partyContainerFrame:Show()
     hdr:SetAttribute("startingIndex", -4)
     hdr:Show()
     hdr:SetAttribute("startingIndex", 1)
-    hdr:Hide()
     ns._partyContainerFrame:Hide()
 
     -- Window-phase secure styling; insecure bodies run in the deferred pass.
@@ -12843,7 +13248,11 @@ ns._PositionPartySlots = function(bw, bh, cs, unitGrowth)
     -- nameList -- not showPlayer -- is what omits the player when Hide Self is on).
     -- Sort By = FrameSort: its list places the player, so the self button
     -- stands down and the player stays inside the header.
-    local useSelf = (pSelfFirst or pSelfLast) and not hideSelf and IsInGroup() and not ns._PartyInRaid()
+    -- A party set the group state hides is laid out native (no self button, no
+    -- centering): the visibility driver can show it mid-fight, when neither can
+    -- be placed, and the header alone then shows every member from the first slot.
+    local _, live = ns._RFVisWanted()
+    local useSelf = live and (pSelfFirst or pSelfLast) and not hideSelf and IsInGroup() and not ns._PartyInRaid()
         and not ns._FsPartyMode()
 
     -- The header's own size feeds the first child's centered anchor
@@ -12875,7 +13284,9 @@ ns._PositionPartySlots = function(bw, bh, cs, unitGrowth)
     -- and the Center When Solo cog forces it while solo regardless of the growth mode.
     local centerShift = 0
     local centered = (s.partyFlipGrowth == "centered")
-    if not IsInGroup() then
+    if not live then
+        -- Hidden set: the stack starts at the first slot (see useSelf above).
+    elseif not IsInGroup() then
         if centered or s.partyCenterWhenSolo then centerShift = 2 end
     elseif centered then
         local shown = GetNumGroupMembers() or 0
@@ -13972,9 +14383,14 @@ ns._LayoutPartyFrames = function()
         local pSortMode = s.partySortMode or s.sortMode
         local sortByRole = pSortMode == "ROLE"
         local roleOrder = s.partyRoleOrder or s.roleOrder or { "TANK", "HEALER", "DAMAGER" }
+        -- A party set the group state hides takes no nameList: a nameList is also
+        -- a filter, and the visibility driver can show the set mid-fight, when no
+        -- list can be rebuilt, so a stale one would drop the new members. The
+        -- shown pass (_UpdatePartyVisibility) applies the lists.
+        local _, live = ns._RFVisWanted()
         -- Sort By = FrameSort: a nameList in FrameSort's order (native index
         -- order while FrameSort is absent or its list is empty).
-        local fsRank = (pSortMode == "FRAMESORT") and ns._FrameSortRanks(not ns._fsFromProvider) or nil
+        local fsRank = live and (pSortMode == "FRAMESORT") and ns._FrameSortRanks(not ns._fsFromProvider) or nil
         -- showPlayer is false when the self button owns the player (useSelf) or
         -- when hiding self; true only for a normal in-header player frame. In
         -- arena useSelf is forced false (no self button), so this reduces to
@@ -13988,7 +14404,9 @@ ns._LayoutPartyFrames = function()
         -- members. When off, fall back to the native groupBy/sortMethod path.
         local wantGroupBy, wantSortMethod, wantGroupingOrder, wantNameList, wantGroupFilter
         local smallRaidGroup = ns._SmallRaidGroup()
-        if ns._PartyInRaid() then
+        if not live then
+            -- Hidden set: the native path below.
+        elseif ns._PartyInRaid() then
             -- Party-in-raid runs on raid units, where Prioritize Class cannot
             -- work (it iterates party1-4) and neither the self button nor
             -- showPlayer can order or hide the player. A raid-token nameList
@@ -14021,7 +14439,11 @@ ns._LayoutPartyFrames = function()
             wantGroupBy = sortByRole and "ASSIGNEDROLE" or nil
             wantSortMethod = sortByRole and "NAME" or "INDEX"
             wantGroupingOrder = sortByRole and (table.concat(roleOrder, ",") .. ",NONE") or ""
-            wantGroupFilter = smallRaidGroup and tostring(smallRaidGroup) or "1,2,3,4,5,6,7,8"
+            -- Small Raid keeps its group-1 limit in a party too (every party member
+            -- is subgroup 1 there), so a party the driver keeps shown as it turns
+            -- into a small raid mid-fight shows group 1, not the first five raiders.
+            local fGroup = smallRaidGroup or ((s.partySmallRaid == true and not ns._InArena()) and 1) or nil
+            wantGroupFilter = fGroup and tostring(fGroup) or "1,2,3,4,5,6,7,8"
         end
 
         local function ApplyAttrs()
@@ -14046,6 +14468,9 @@ ns._LayoutPartyFrames = function()
         elseif needsHideShow then
             ApplyAttrs()
         end
+        -- Which layout the header now carries (shown: full; hidden: native), for
+        -- _UpdatePartyVisibility to re-lay it when the set hides.
+        ns._partyLaidVis = live
     end
 
     -- Self button + header slot positioning ran above (ns._PositionPartySlots),
@@ -14141,13 +14566,8 @@ ns._UpdatePartyVisibility = function()
     -- Arena and Small Raid mode show party frames even though IsInRaid() is
     -- true. The header binds raid units via showRaid=true; the raid container
     -- is hidden there by UpdateVisibility.
-    local partyMode = ns._PartyInRaid()
-    local visible = false
-    if IsInGroup() and (partyMode or not IsInRaid()) then
-        visible = true
-    elseif not IsInGroup() then
-        visible = s.partyShowWhenSolo
-    end
+    local _, visible = ns._RFVisWanted()
+    local wasVisible = ns._partyFramesVisible
     ns._partyFramesVisible = visible
     if ns._NotifyTrackerProviders then ns._NotifyTrackerProviders() end
 
@@ -14159,10 +14579,11 @@ ns._UpdatePartyVisibility = function()
         ns._partyHeader:SetAttribute("showSolo", wantPartySolo)
     end
 
+    -- Only the container shows and hides (the header stays shown inside it);
+    -- the driver decides the same way, synced first so the two agree this frame.
+    ns._RFSyncVisDrivers()
+    ns._partyContainerFrame:SetShown(visible)
     if visible then
-        ns._partyHeader:Show()
-        ns._partyContainerFrame:Show()
-
         -- Suppress Blizzard party frames
         if ns._SuppressBlizzParty then
             ns._SuppressBlizzParty()
@@ -14179,21 +14600,23 @@ ns._UpdatePartyVisibility = function()
             StartGhostTicker()
         end
     else
-        ns._partyHeader:Hide()
-        ns._partyContainerFrame:Hide()
-
         if not framesVisible then
             StopRangeTicker()
             StopGhostTicker()
         end
 
+        if wasVisible then ns._RFForgetOccupants(ns._partyAllButtons) end
         wipe(ns._partyUnitToButton)
         ns.RF_KitPortraitEvents(false)
+        -- A hidden set runs native (see _LayoutPartyFrames), so the driver can
+        -- show it mid-fight with every member in place.
+        if ns._partyLaidVis ~= false then ns._LayoutPartyFrames() end
     end
 
     -- Attach-point edges the layout pass above cannot cover: the boss group's own roster pass can
-    -- run before the party frames are up, and the hidden branch never lays out at all (the group
-    -- then falls back to its free position). EDGE only -- this recompute runs on every roster event.
+    -- run before the party frames are up, and the hidden branch lays out only when the set hides
+    -- (the group then falls back to its free position). EDGE only -- this recompute runs on every
+    -- roster event.
     if ns._fbPartyAttachState ~= visible then
         ns._fbPartyAttachState = visible
         if ns.FB_ReAnchor then ns.FB_ReAnchor() end
@@ -14204,6 +14627,49 @@ ns._UpdatePartyVisibility = function()
         ns._ptVisState = visible
         if visible and ptWas then ns._PT_RefreshAll() end
     end
+end
+
+-- Combat half of the two passes above. In combat the visibility drivers show
+-- and hide the containers themselves; this keeps the Lua side in step with no
+-- protected call: the flags that gate unit events, the routing maps, the range
+-- and ghost tickers, the power and portrait registrations, the tracker
+-- providers. The shown set's header re-reads the roster as it shows, and each
+-- assignment remaps and repaints its button. Edge-gated (a roster storm with no
+-- set change costs two compares); an edge marks the roster dirty so combat end
+-- runs the full passes (layout, sort, sizes).
+ns._RFCombatVisEdge = function()
+    local raid, party = ns._RFVisWanted()
+    local raidEdge = raid ~= (framesVisible == true)
+    local partyEdge = party ~= (ns._partyFramesVisible == true)
+    if not raidEdge and not partyEdge then return end
+    ns._rosterDirtyInCombat = true
+    if raidEdge then
+        framesVisible = raid
+        ns._raidFramesVisible = raid
+        if not raid then
+            ns._RFForgetOccupants(allButtons)
+            wipe(unitToButton)
+        end
+    end
+    if partyEdge then
+        ns._partyFramesVisible = party
+        if not party then
+            ns._RFForgetOccupants(ns._partyAllButtons)
+            wipe(ns._partyUnitToButton)
+        end
+        ns.RF_KitPortraitEvents(party)
+    end
+    if raid or party then
+        if IsInGroup() then
+            StartRangeTicker()
+            StartGhostTicker()
+        end
+    else
+        StopRangeTicker()
+        StopGhostTicker()
+    end
+    if ns.UpdatePowerEventRegistration then ns.UpdatePowerEventRegistration() end
+    if ns._NotifyTrackerProviders then ns._NotifyTrackerProviders() end
 end
 
 -- Reload party frames: apply party-specific sizing then shared rendering.
@@ -14288,7 +14754,7 @@ ns.ReloadPartyFrames = function(skipButtons)
         -- The Party Frames kit owns its bar rects (its pass runs below, after
         -- the texture swaps, so its masks seat on the new fills).
         if not d.kit then
-            LayoutTopNameBar(raw, bh, powerH, d.health, d.topNameBar, d.topNameBarBg, d.topNameBarText)
+            LayoutTopNameBar(raw, bh, powerH, d.health, d.topNameBar, d.topNameBarBg, d.topNameBarText, d.power)
         end
         if d.health then
             d.health:SetStatusBarTexture(texPath)
@@ -14357,6 +14823,12 @@ ns.ReloadPartyFrames = function(skipButtons)
             ns._RFAnchorPowerText(d)
         end
 
+        -- Level text: restyled; _UpdateAllPartyButtons below shows or hides it by position.
+        if d.levelText then
+            ApplyFont(d.levelText, pp.levelTextSize or 10)
+            ns._RFAnchorLevelText(d)
+        end
+
         -- Heal absorb text
         if d.healAbsorbText then
             ApplyFont(d.healAbsorbText, pp.healAbsorbTextSize or 9)
@@ -14416,6 +14888,7 @@ ns.ReloadPartyFrames = function(skipButtons)
 
         -- Ping marker
         if d.pingFrame then ns._RFAnchorPing(d) end
+        if ns.RF_FvMissingAnchor then ns.RF_FvMissingAnchor(btn, d) end
 
         -- Border
         if d.UpdateBorder then d.UpdateBorder() end
@@ -16361,6 +16834,12 @@ local function CreatePreviewFrame(index, party)
     powerFS:SetTextColor(1, 1, 1, 0.9)
     powerFS:Hide()
 
+    -- Level text on its own spot (anchored, sized, coloured and shown by ApplyPreviewData)
+    local levelFS = textCarrier:CreateFontString(nil, "OVERLAY")
+    ApplyFont(levelFS, s.levelTextSize or 10)
+    levelFS:SetWordWrap(false)
+    levelFS:Hide()
+
     -- Heal absorb text (preview)
     local healAbsorbFS = textCarrier:CreateFontString(nil, "OVERLAY")
     ApplyFont(healAbsorbFS, s.healAbsorbTextSize or 9)
@@ -16437,6 +16916,7 @@ local function CreatePreviewFrame(index, party)
     f._topNameBarText = tnbText
     f._healthText = healthFS
     f._powerText = powerFS
+    f._levelText = levelFS
     f._healAbsorbText = healAbsorbFS
     f._statusText = statusFS
     f._roleIcon = roleIcon
@@ -16794,7 +17274,7 @@ local function ApplyPreviewData(f, index)
 
     -- Health bar height/anchor + Top Name Bar (helper re-anchors health top to
     -- -topBarH; the per-unit power block below re-sets only the height)
-    LayoutTopNameBar(s, h, powerH, f._health, f._topNameBar, f._topNameBarBg, f._topNameBarText)
+    LayoutTopNameBar(s, h, powerH, f._health, f._topNameBar, f._topNameBarBg, f._topNameBarText, f._power)
 
     -- Health bar
     if f._health then
@@ -16842,7 +17322,12 @@ local function ApplyPreviewData(f, index)
 
     -- Top Name Bar text (preview unit name + class/custom color)
     if f._topNameBarText and s.topNameBarEnabled then
-        f._topNameBarText:SetText(name)
+        local attach = ns.RF_LEVEL_ATTACH[s.levelTextPosition or ns.RF_LEVEL_DEFAULT]
+        if attach then
+            f._topNameBarText:SetFormattedText(attach[1], ns._RFPreviewLevel(), name)
+        else
+            f._topNameBarText:SetText(name)
+        end
         if (s.topNameBarTextColorMode or "class") == "custom" then
             local c = s.topNameBarTextColor or { r = 1, g = 1, b = 1 }
             f._topNameBarText:SetTextColor(c.r, c.g, c.b)
@@ -17769,6 +18254,9 @@ local function ApplyPreviewData(f, index)
         end
     end
 
+    -- WoW Forever: Missing Buffs (EUI_RaidFrames_ForeverMissingBuffs.lua).
+    if ns.RF_FvMissingPreview then ns.RF_FvMissingPreview(f, index, s, indVis) end
+
     -- Ready check icon
     if f._readyCheck then
         local rcStatuses = previewRoles._readyCheck
@@ -17879,11 +18367,33 @@ local function ApplyPreviewData(f, index)
         end
         -- Force text re-render (WoW doesn't visually re-layout on JustifyH change alone)
         f._nameText:SetText("")
-        f._nameText:SetText(ns.CapName(name, s))
+        local attach = ns.RF_LEVEL_ATTACH[s.levelTextPosition or ns.RF_LEVEL_DEFAULT]
+        local pvName = ns.RF_FormatName and ns.RF_FormatName(name, s) or name
+        if attach then
+            f._nameText:SetFormattedText(attach[1], ns._RFPreviewLevel(), ns.CapName(pvName, s))
+        else
+            f._nameText:SetText(ns.CapName(pvName, s))
+        end
         ApplyFont(f._nameText, s.nameSize or 10)
         f._nameText:SetTextColor(ns.RF_PreviewTextColor(s.nameColorMode or "class",
             s.nameCustomColor, classToken, 1, 1, 1))
         end -- pos ~= "none"
+    end
+
+    -- Level text on its own spot (preview): the player's level in the name's colour.
+    if f._levelText then
+        local lpos = s.levelTextPosition or ns.RF_LEVEL_DEFAULT
+        if lpos == "none" or ns.RF_LEVEL_ATTACH[lpos] then
+            f._levelText:Hide()
+        else
+            ApplyFont(f._levelText, s.levelTextSize or 10)
+            ns.AnchorRFText(f._levelText, ns.RF_BarHost(f._health, s), lpos,
+                s.levelTextOffsetX or 0, s.levelTextOffsetY or 0)
+            f._levelText:SetFormattedText("%d", ns._RFPreviewLevel())
+            f._levelText:SetTextColor(ns.RF_PreviewTextColor(s.nameColorMode or "class",
+                s.nameCustomColor, classToken, 1, 1, 1))
+            f._levelText:Show()
+        end
     end
 
     -- Dead/offline/AFK states (only when indicators eyeball is on). The rez slot is
@@ -19942,6 +20452,13 @@ function ERF:OnEnable()
     -- Create party header (after CC_Init so click-cast registers)
     ns._CreatePartyHeader()
 
+    -- Both containers show and hide through their visibility drivers from here
+    -- on, registered in the login window so a /reload in combat has them too.
+    -- Blizzard's PartyFrame goes down here too, so it can never stand in for
+    -- ours (a group joined in combat).
+    ns._RFSyncVisDrivers()
+    ns._SuppressBlizzParty(true)
+
     -- Size + position party container from profile
     do
         local s = db.profile
@@ -20216,6 +20733,24 @@ function ERF:OnEnable()
     for i = 1, 40 do MakeUnitTracker("raid" .. i) end
     eventFrame:SetScript("OnEvent", OnEvent)
 
+    -- Level Text's UNIT_LEVEL: registered on every tracker only while a view shows the
+    -- level. Called from _RefreshProxyModes (every settings write, reload and profile
+    -- swap); the stamp keeps the 45-tracker walk to real flips.
+    local lvlRegistered = false
+    function ns._RFSyncLevelRegistration()
+        local want = ns._RFLevelWanted()
+        if want == lvlRegistered then return end
+        lvlRegistered = want
+        for unit, tracker in pairs(unitTrackers) do
+            if want then
+                tracker:RegisterUnitEvent("UNIT_LEVEL", unit)
+            else
+                tracker:UnregisterEvent("UNIT_LEVEL")
+            end
+        end
+    end
+    ns._RFSyncLevelRegistration()
+
     -- UNIT_FLAGS is opt-in: only registered while the combat icon is enabled.
     if ns.UpdateCombatEventRegistration then ns.UpdateCombatEventRegistration() end
 
@@ -20275,6 +20810,16 @@ function ERF:OnEnable()
 
     -- Initial update after a short delay
     C_Timer.After(0.5, function()
+        -- A /reload in combat never sees PLAYER_REGEN_DISABLED: take the combat
+        -- state from the lockdown, and let the combat edge set the visibility
+        -- flags the two passes below skip in combat.
+        if InCombatLockdown() then
+            inCombat = true
+            ns._RFCombatVisEdge()
+            -- Members assigned while the flag was still down (the first half
+            -- second) were kept out of the map; the raid branch below rebuilds too.
+            if ns._partyFramesVisible then ns._RebuildPartyUnitMap() end
+        end
         UpdateVisibility()
         ns._UpdatePartyVisibility()
         if framesVisible then
