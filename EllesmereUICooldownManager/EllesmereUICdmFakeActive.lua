@@ -1210,7 +1210,8 @@ ApplyCdState = function(frame, fc, cas, eff, onCD, ready)
         if ns.SetCdStateShiftHidden then ns.SetCdStateShiftHidden(fc, false) end
         return
     end
-    -- Glow modes: glow while the ability is READY (off cooldown). Not a hide.
+    -- Glow modes: glow while the ability is READY (off cooldown), or while it is
+    -- ON cooldown for Glow (On CD). Not a hide.
     -- Restore the alpha as well as the flag, exactly as the appearance refresh
     -- does on this transition: once a bar has settled nothing else re-asserts a
     -- preset frame's alpha, so clearing the flag alone leaves a hide from an
@@ -1218,23 +1219,31 @@ ApplyCdState = function(frame, fc, cas, eff, onCD, ready)
     if fc._cdStateHidden then frame:SetAlpha(FrameBaseAlpha(fc)) end
     fc._cdStateHidden = false
     if ns.SetCdStateShiftHidden then ns.SetCdStateShiftHidden(fc, false) end
-    local glow = fd and fd.glowOverlay
-    if not glow then return end
-    if not onCD then
+    if not fd then return end
+    -- Glow (On CD) wants the OPPOSITE cooldown state from the Ready variants
+    -- (as the glowOnCD branch of the SetDesaturated hook in CdmHooks.lua).
+    local isOnCdGlow = (eff == "glowOnCD")
+    local wantsGlow = isOnCdGlow and onCD or (not isOnCdGlow and not onCD)
+    if wantsGlow then
+        local style = ns.CdReadyGlowStyle(eff, cas)
+        local styleEntry = ns.GLOW_STYLES[style]
+        -- A branch, not `and/or`: the Blackout frame does not exist before
+        -- its first start, and the shared overlay must not stand in for it.
+        local ov
+        if styleEntry and styleEntry.solidFill then ov = fd.blackoutOverlay else ov = fd.glowOverlay end
         -- Re-assert against the overlay's REAL state (overlay._glowActive), not
-        -- our flag alone. fd.glowOverlay is shared with the proc-glow and
+        -- our flag alone. The overlay is shared with the proc-glow and
         -- appearance passes, and twelve of the thirteen sites that stop it never
         -- tell this engine -- so the flag said "lit" while the overlay was dark
-        -- and a ready preset stayed unglowed until the next re-arm. Only ever
-        -- starts a glow when nothing is running, so it cannot stomp another
-        -- owner's.
-        if not fd._presetCdGlowOn or not glow._glowActive then
-            local style = ns.CdReadyGlowStyle(eff, cas)
-            ns.StartNativeGlow(glow, style, ns.CdReadyGlowColor(style, cas))
-            fd._presetCdGlowOn = true
+        -- and a ready preset stayed unglowed until the next re-arm. A live
+        -- proc or active-state glow keeps the shared overlay (ns.StartCdGlow
+        -- returns nil), and the memo stays off until a later pass lights it.
+        if not fd._presetCdGlowOn or not (ov and ov._glowActive) then
+            local cr, cg, cb = ns.CdReadyGlowColor(style, cas)
+            fd._presetCdGlowOn = ns.StartCdGlow(fd, style, cr, cg, cb, ns.CdReadyGlowAlpha(cas)) ~= nil
         end
     elseif fd._presetCdGlowOn then
-        ns.StopNativeGlow(glow)
+        ns.StopCdGlow(fd)
         fd._presetCdGlowOn = false
     end
 end
@@ -1256,8 +1265,8 @@ RestoreAllCdState = function()
                     fc._cdStateHidden = false
                     if ns.SetCdStateShiftHidden then ns.SetCdStateShiftHidden(fc, false) end
                 end
-                if fd._presetCdGlowOn and fd.glowOverlay then
-                    ns.StopNativeGlow(fd.glowOverlay)
+                if fd._presetCdGlowOn and (fd.glowOverlay or fd.blackoutOverlay) then
+                    ns.StopCdGlow(fd)
                     fd._presetCdGlowOn = false
                 end
                 fd._presetCdTouched = nil
@@ -1292,10 +1301,13 @@ end
 -- GCD confusion, and it fires under combat secrecy (the engine animates
 -- durations Lua cannot read) and at alpha 0 (cd-state hides never Hide()).
 local function WireCdStateFrame(f)
-    if f._cdsWired then return end
+    -- The wired mark lives in the frame's decoration data, never on the frame:
+    -- a natively tracked racial's icon is Blizzard's own pooled viewer frame.
+    local wfd = ns._hookFrameData and ns._hookFrameData[f]
+    if not wfd or wfd._cdsWired then return end
     local cd = f.cd or f.Cooldown
     if not cd then return end
-    f._cdsWired = true
+    wfd._cdsWired = true
     cd:HookScript("OnCooldownDone", function()
         QueueCdStateEval()
     end)
@@ -1348,9 +1360,13 @@ EvalCdStateNow = function()
                     local fc = f and FCt[f]
                     -- rule.user rules come from the profile store; built-in rules
                     -- (FAKE_ACTIVE_RULES) deliberately decorate Blizzard icons and
-                    -- keep their reach.
+                    -- keep their reach. Racials are also let through natively-tracked
+                    -- (non-injected) frames: the Presets cog is their only cd-state
+                    -- config surface, unlike custom spells which legitimately defer
+                    -- to normal per-spell settings once Blizzard tracks them for real.
                     if fc and KeyMatches(sid, fc.spellID)
-                       and (not rule.user or IsInjectedFrame(f)) then
+                       and (not rule.user or IsInjectedFrame(f)
+                            or (ns._myRacialsSet and ns._myRacialsSet[sid])) then
                         hasIcon = true
                         WireCdStateFrame(f)
                         if eff then ApplyCdState(f, fc, cas, eff, onCD, ready) end

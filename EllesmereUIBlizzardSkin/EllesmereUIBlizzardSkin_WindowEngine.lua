@@ -126,15 +126,20 @@ end
 --  FadeRegions: alpha-out every direct texture region on a frame (+ NineSlice).
 --  `keep` is a set of texture objects to leave alone. Visual-only, no Hide().
 -------------------------------------------------------------------------------
-local function FadeRegions(frame, keep)
-    if not frame or frame:IsForbidden() then return end
-    local regions = { frame:GetRegions() }
-    for i = 1, #regions do
-        local r = regions[i]
+-- Walks GetRegions' returns directly: every global Restrip (each loot open,
+-- mail and calendar updates) runs this for every registered frame, so it must
+-- not allocate.
+local function FadeTextures(keep, ...)
+    for i = 1, select("#", ...) do
+        local r = (select(i, ...))
         if r and r.IsObjectType and r:IsObjectType("Texture") and not (keep and keep[r]) then
             r:SetAlpha(0)
         end
     end
+end
+local function FadeRegions(frame, keep)
+    if not frame or frame:IsForbidden() then return end
+    FadeTextures(keep, frame:GetRegions())
     if frame.NineSlice then FadeRegions(frame.NineSlice, keep) end
 end
 WSkin.FadeRegions = FadeRegions

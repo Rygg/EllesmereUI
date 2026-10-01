@@ -4,8 +4,10 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 --  native ScrollBox and buttons: no custom DataProvider, no friend groups.
 -------------------------------------------------------------------------------
 local ADDON_NAME = ...
-if not (EllesmereUI and EllesmereUI._ModuleNS) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
-EllesmereUI._ModuleNS[ADDON_NAME] = select(2, ...)  -- LOD options files read this module ns via the registry
+if not (EllesmereUI and EllesmereUI._ModuleNS and EllesmereUI.NewCombatQueue) then EUI_CLIENT_BLOCKED = true; return end -- stale-parent guard: a partially updated install (old parent, new child) goes dormant via the line-1 failsafe instead of erroring
+local ns = select(2, ...)
+EllesmereUI._ModuleNS[ADDON_NAME] = ns  -- LOD options files read this module ns via the registry
+ns.CombatQueue = EllesmereUI.NewCombatQueue(CreateFrame("Frame"))
 
 local EBS = EllesmereUI.Lite.NewAddon("EllesmereUIFriends")
 
@@ -90,23 +92,11 @@ end
 -------------------------------------------------------------------------------
 --  Combat safety
 -------------------------------------------------------------------------------
-local pendingApply = false
 local ApplyAll  -- forward declaration
 
-local combatFrame = CreateFrame("Frame")
-combatFrame:SetScript("OnEvent", function(self)
-    self:UnregisterEvent("PLAYER_REGEN_ENABLED")
-    if pendingApply then
-        pendingApply = false
-        ApplyAll()
-    end
-end)
-
--- Regen listener is armed only while an apply is pending: zero cost otherwise.
+-- Keyed queue entry: repeat requests before regen collapse into one apply.
 local function QueueApplyAll()
-    if pendingApply then return end
-    pendingApply = true
-    combatFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+    ns.CombatQueue.Defer("ApplyAll", ApplyAll)
 end
 
 local function StripTextures(f)
@@ -622,24 +612,6 @@ local function GetFriendClassFile(bnetInfo, wowInfo)
     return nil
 end
 
--- Group tag ||EUI:GroupName|| in Blizzard friend notes; display only, stripped.
-local EUI_NOTE_TAG = "||EUI:"
-local EUI_NOTE_END = "||"
-
-local function ParseGroupFromNote(note)
-    if not note or note == "" then return nil, note end
-    local tagStart = note:find(EUI_NOTE_TAG, 1, true)
-    if not tagStart then return nil, note end
-    local groupStart = tagStart + #EUI_NOTE_TAG
-    local tagEnd = note:find(EUI_NOTE_END, groupStart, true)
-    if not tagEnd then return nil, note end
-    local group = note:sub(groupStart, tagEnd - 1)
-    local clean = note:sub(1, tagStart - 1)
-    clean = clean:match("^(.-)%s*$") or clean
-    if group == "" then return nil, clean end
-    return group, clean
-end
-
 local OFFLINE_ICON = "Interface\\AddOns\\EllesmereUIFriends\\Media\\offline.png"
 
 local MINI_DISPLAY = {
@@ -951,16 +923,10 @@ local function PostUpdateFriendButton(button)
         local userNote
         if button.buttonType == FRIENDS_BUTTON_TYPE_BNET then
             local cached = _friendCache[button.id]
-            if cached and cached.note then
-                local _, clean = ParseGroupFromNote(cached.note)
-                if clean and clean ~= "" then userNote = clean end
-            end
+            if cached then userNote = EllesmereUI.StripFriendNoteTag(cached.note) end
         elseif button.buttonType == FRIENDS_BUTTON_TYPE_WOW then
             local cached = _friendCache[button.id + _FC_WOW_OFFSET]
-            if cached and cached.notes then
-                local _, clean = ParseGroupFromNote(cached.notes)
-                if clean and clean ~= "" then userNote = clean end
-            end
+            if cached then userNote = EllesmereUI.StripFriendNoteTag(cached.notes) end
         end
         if userNote then
             if origInfo ~= "" then

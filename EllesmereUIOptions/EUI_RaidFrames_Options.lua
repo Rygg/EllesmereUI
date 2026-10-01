@@ -661,6 +661,57 @@ initFrame:SetScript("OnEvent", function(self)
         return SGet(key)
     end
 
+    -- WoW Forever: the Missing Buffs icons' glow (prefix keys missingBuffsGlow*)
+    -- as a shared glow descriptor over a read/write pair -- the page's context-
+    -- aware SVal/SWrite in the indicator's cog, the raid keys on Global
+    -- Settings > Glows (built outside any tab, so never through the tab context).
+    local MissingGlowDesc
+    if EllesmereUI.IS_FOREVER then
+        local GK = EllesmereUI.Glows.PrefixKeys("missingBuffsGlow")
+        function MissingGlowDesc(read, write)
+            return {
+                host = "icon", excludes = { [4] = true },
+                caps = { mode = true, params = true, bg = true },
+                defaultColor = EllesmereUI.Glows.DEFAULT_COLOR,
+                onChange = ReloadAndUpdate,
+                disabled = function() return read("showMissingBuffs", true) == false end,
+                disabledTooltip = "Missing Buffs",
+                get = function(f)
+                    if f == "style" then return read(GK.type, 2)
+                    elseif f == "mode" then return read(GK.mode, "default")
+                    elseif f == "color" then return read(GK.r), read(GK.g), read(GK.b)
+                    elseif f == "lines" then return read(GK.lines)
+                    elseif f == "thickness" then return read(GK.th)
+                    elseif f == "speed" then return read(GK.speed)
+                    elseif f == "bg" then return read(GK.bg) == true
+                    elseif f == "bgColor" then return read(GK.bgR), read(GK.bgG), read(GK.bgB)
+                    end
+                end,
+                set = function(f, a, b, c)
+                    if f == "style" then write(GK.type, a)
+                    elseif f == "mode" then write(GK.mode, a)
+                    elseif f == "color" then write(GK.r, a); write(GK.g, b); write(GK.b, c)
+                    elseif f == "lines" then write(GK.lines, a)
+                    elseif f == "thickness" then write(GK.th, a)
+                    elseif f == "speed" then write(GK.speed, a)
+                    elseif f == "bg" then write(GK.bg, a and true or nil)
+                    elseif f == "bgColor" then write(GK.bgR, a); write(GK.bgG, b); write(GK.bgB, c)
+                    end
+                end,
+            }
+        end
+        EllesmereUI.GlowOptions.RegisterSite({ id = "rf_missing_buffs", label = "Missing Buffs Glow",
+            group = "module", module = "EllesmereUIRaidFrames", page = PAGE_MAIN,
+            section = "INDICATORS", highlight = "Missing Buffs",
+            desc = MissingGlowDesc(
+                function(key, default)
+                    local v = db.profile[key]
+                    if v == nil then return default end
+                    return v
+                end,
+                function(key, v) db.profile[key] = v end) })
+    end
+
     ---------------------------------------------------------------------------
     --  Shared "Sort By" control: Group/Role radio + drag-to-reorder role rows,
     --  installed into a DualRow half-region (replaces its placeholder dropdown);
@@ -2723,20 +2774,31 @@ initFrame:SetScript("OnEvent", function(self)
                       return SVal("nameColorMode", "class") == "accent" and 1 or 0.3
                   end },
               } });  y = y - h
-        -- Name char cap + text stacking cog, on the Name Size slider.
+        -- Name char cap + text stacking cog, on the Name Size slider. WoW Forever
+        -- heads it with Name Format (the character name's first or last word; First
+        -- and Last is the default). "full" is stored, not nil: a party section's nil
+        -- would fall through to the raid value.
         do
             local rgn = row._leftRegion
+            local nameRows = {
+                { type="slider", label="Max Characters (0=off)", min=0, max=30, step=1,
+                  get=function() return SVal("nameMaxLength", 15) end,
+                  set=function(v) SSet("nameMaxLength", v) end },
+                { type="toggle", label="Show Above Icons",
+                  tooltip="Render the name and health text above buff and debuff icons.",
+                  get=function() return SVal("nameTextAboveIcons", false) end,
+                  set=function(v) SSet("nameTextAboveIcons", v) end },
+            }
+            if EllesmereUI.IS_FOREVER then
+                table.insert(nameRows, 1, { type="dropdown", label="Name Format",
+                    values={ first = "First Name", last = "Last Name", full = "First and Last" },
+                    order={ "first", "last", "full" },
+                    get=function() return SVal("nameFormat", "full") end,
+                    set=function(v) SSet("nameFormat", v) end })
+            end
             EllesmereUI.BuildInlineCog(rgn, {
                 title = "Name Text",
-                rows = {
-                    { type="slider", label="Max Characters (0=off)", min=0, max=30, step=1,
-                      get=function() return SVal("nameMaxLength", 15) end,
-                      set=function(v) SSet("nameMaxLength", v) end },
-                    { type="toggle", label="Show Above Icons",
-                      tooltip="Render the name and health text above buff and debuff icons.",
-                      get=function() return SVal("nameTextAboveIcons", false) end,
-                      set=function(v) SSet("nameTextAboveIcons", v) end },
-                },
+                rows = nameRows,
             })
         end
 
@@ -2858,6 +2920,46 @@ initFrame:SetScript("OnEvent", function(self)
             })
         end
         end   -- close Health Text dependent-row gate
+
+        -- Level Position (+ offset cog) | Level Size: the unit's level in front of the name inside
+        -- the name text ("Attach to Name", the WoW Forever default, None on retail: "60 Name"; "(Divider)": "60 | Name"; both
+        -- follow the Name Size), or in the name's colour on its own spot. None = off.
+        do
+            local levelPosValues = { name = "Attach to Name", nameDiv = "Attach to Name (Divider)" }
+            for k, v in pairs(namePositionValuesName) do levelPosValues[k] = v end
+            local levelPosOrder = { "name", "nameDiv", "topleft", "top", "topright", "left", "center",
+                "right", "bottomleft", "bottom", "bottomright", "none" }
+            local function LvlPos() return SVal("levelTextPosition", ns.RF_LEVEL_DEFAULT) end
+            local function LvlAttached() return ns.RF_LEVEL_ATTACH[LvlPos()] ~= nil end
+            local function LvlSpotOff() return LvlPos() == "none" or LvlAttached() end
+            local function LvlReq()
+                return LvlAttached() and "Attached to the name, the level uses the Name Size." or "Level Position"
+            end
+            local function LvlCogReq()
+                return LvlAttached() and "Attached to the name, the level follows the name's position." or "Level Position"
+            end
+            row, h = W:DualRow(parent, y,
+                { type="dropdown", text="Level Position", values=levelPosValues, order=levelPosOrder,
+                  getValue=LvlPos,
+                  setValue=function(v) SSet("levelTextPosition", v); EllesmereUI:RefreshPage() end },
+                { type="slider", text="Level Size", min=6, max=26, step=1,
+                  disabled=LvlSpotOff, disabledTooltip=LvlReq, rawTooltip=LvlAttached,
+                  getValue=function() return SVal("levelTextSize", 10) end,
+                  setValue=function(v) SSet("levelTextSize", v) end });  y = y - h
+            EllesmereUI.BuildInlineCog(row._leftRegion, {
+                icon = EllesmereUI.DIRECTIONS_ICON,
+                disabled = LvlSpotOff, disabledTooltip = LvlCogReq, rawTooltip = LvlAttached,
+                title = "Level Offset",
+                rows = {
+                    { type="slider", label="Offset X", min=-500, max=500, step=1,
+                      get=function() return SVal("levelTextOffsetX", 0) end,
+                      set=function(v) SSet("levelTextOffsetX", v) end },
+                    { type="slider", label="Offset Y", min=-500, max=500, step=1,
+                      get=function() return SVal("levelTextOffsetY", 0) end,
+                      set=function(v) SSet("levelTextOffsetY", v) end },
+                },
+            })
+        end
 
         -- Power Text (+ Custom/Class/Accent/Power swatches) | Power Text Size (+ position cog). Shows only on frames whose power bar shows, so everything greys while no role shows one.
         do
@@ -3146,6 +3248,84 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUI.HideWidgetTooltip()
             end)
         end  -- close do (indicators eyeball)
+
+        -- WoW Forever: Missing Buffs, first in the section (runtime in
+        -- EUI_RaidFrames_ForeverMissingBuffs.lua). The raid marker row's
+        -- shape: Position (None turns it off) | Size, offsets in the cog.
+        if EllesmereUI.IS_FOREVER then
+            local mbPositionValues = {
+                none        = "None",
+                topleft     = "Top Left",
+                top         = "Top",
+                topright    = "Top Right",
+                left        = "Left",
+                center      = "Center",
+                right       = "Right",
+                bottomleft  = "Bottom Left",
+                bottom      = "Bottom",
+                bottomright = "Bottom Right",
+            }
+            local mbPositionOrder = { "none", "topleft", "top", "topright", "left", "center", "right", "bottomleft", "bottom", "bottomright" }
+            local mbRow
+            mbRow, h = W:DualRow(parent, y,
+                { type="dropdown", text="Missing Buffs", values=mbPositionValues, order=mbPositionOrder,
+                  tooltip="Shows Fortitude, Mark of the Wild, Spirit or Thorns on a member who is missing it, for the buffs you can cast yourself (choose which in the cog).",
+                  getValue=function()
+                      if not SVal("showMissingBuffs", true) then return "none" end
+                      return SVal("missingBuffsPosition", "top")
+                  end,
+                  setValue=function(v)
+                      if v == "none" then
+                          SSet("showMissingBuffs", false)
+                      else
+                          SWrite("showMissingBuffs", true)
+                          SSet("missingBuffsPosition", v)
+                      end
+                      EllesmereUI:RefreshPage()
+                  end },
+                { type="slider", text="Missing Buffs Size", min=8, max=40, step=1,
+                  disabled=function() return not SVal("showMissingBuffs", true) end,
+                  disabledTooltip="Missing Buffs",
+                  getValue=function() return SVal("missingBuffsSize", 22) end,
+                  setValue=function(v) SSet("missingBuffsSize", v) end });  y = y - h
+            do
+                local rgn = mbRow._leftRegion
+                local rows = {
+                    -- One switch per buff (all on by default). The list is the
+                    -- profile's, shared across classes, so every buff is listed;
+                    -- only the ones this character can cast ever show.
+                    { type="reordercheck", label="Buffs", ddWidth=170,  -- the Glow dropdown's width
+                      hint="Only buffs you can cast show",
+                      items={
+                          { key="missingBuffsFort",   label="Fortitude",        fixed=true },
+                          { key="missingBuffsMark",   label="Mark of the Wild", fixed=true },
+                          { key="missingBuffsSpirit", label="Spirit",           fixed=true },
+                          { key="missingBuffsThorns", label="Thorns",           fixed=true },
+                          { key="missingBuffsBlessing", label="Paladin Blessings", fixed=true },
+                      },
+                      get=function(key) return SVal(key, true) end,
+                      set=function(key, on) SSet(key, on) end },
+                    { type="slider", label="Offset X", min=-50, max=50, step=1,
+                      get=function() return SVal("missingBuffsOffsetX", 0) end,
+                      set=function(v) SSet("missingBuffsOffsetX", v) end },
+                    { type="slider", label="Offset Y", min=-50, max=50, step=1,
+                      get=function() return SVal("missingBuffsOffsetY", 0) end,
+                      set=function(v) SSet("missingBuffsOffsetY", v) end },
+                }
+                -- The icons' glow: the shared glow controls (also listed on
+                -- Global Settings > Glows); the Pixel Glow rows show only
+                -- while Pixel Glow is picked.
+                for _, r in ipairs(EllesmereUI.GlowOptions.PopupRows(MissingGlowDesc(SVal, SWrite), "Glow", true)) do
+                    rows[#rows + 1] = r
+                end
+                EllesmereUI.BuildInlineCog(rgn, {
+                    title = "Missing Buffs",
+                    rows = rows,
+                    disabled = function() return not SVal("showMissingBuffs", true) end,
+                    disabledTooltip = "Missing Buffs",
+                })
+            end
+        end
 
         local RI_STYLES = ns.ROLE_ICON_STYLES
         -- Effective role: the player's spec wins over a stale assigned role
@@ -3943,7 +4123,10 @@ initFrame:SetScript("OnEvent", function(self)
               order={ "center", "left", "right" },
               getValue=function() return SVal("topNameBarTextAlign", "center") end,
               setValue=function(v) SSet("topNameBarTextAlign", v) end },
-            { type="label", text="" });  y = y - h
+            { type="toggle", text="Show on Bottom",
+              tooltip="Places the bar at the bottom of the frame instead of the top.",
+              getValue=function() return SVal("topNameBarBottom", false) end,
+              setValue=function(v) SSet("topNameBarBottom", v) end });  y = y - h
         -- Custom rightmost (opens picker), class leftmost. Clicking switches topNameBarTextColorMode; the inactive one dims. Custom is added FIRST so it sits next to the dropdown.
         if not EllesmereUI._prebuilding then
             local rgn = tnbRow3._leftRegion
@@ -5595,6 +5778,10 @@ initFrame:SetScript("OnEvent", function(self)
                       tooltip="Collapse subgroups that have no members so the remaining groups close ranks. For example, if only groups 1, 2, 3 and 6 have players, they show with no gaps instead of leaving empty space where groups 4 and 5 would be. Real raid frames only.",
                       get=function() return SVal("hideEmptyGroups", true) end,
                       set=function(v) SSet("hideEmptyGroups", v) end },
+                    { type="toggle", label="Hide Groups 5-8 in Mythic Raid",
+                      tooltip="Mythic raids allow only 20 players (groups 1-4), so hide groups 5-8 while inside one. Groups 1-4 still follow Show Groups, and Show Groups applies as normal everywhere else.",
+                      get=function() return SVal("mythicRaidHideGroups", false) end,
+                      set=function(v) SSet("mythicRaidHideGroups", v) end },
                     { type="toggle", label="Exclude Hidden from Size",
                       tooltip="When using custom raid sizes, don't count members in hidden groups toward the raid-size breakpoint. For example, if you hide groups 7 and 8, a full 40-man raid is sized as if it were 24-man instead of jumping to the 30-man frame size. Has no effect unless you have custom raid sizes set up.",
                       get=function() return SVal("excludeHiddenGroupsFromSize", true) end,
@@ -6791,6 +6978,8 @@ initFrame:SetScript("OnEvent", function(self)
                 local mode = db.profile.previewMode or "overlay"
                 if mode ~= "none" and ns.ShowPartyPreview then ns.ShowPartyPreview() end
             elseif page == PAGE_BUFFS then
+                -- Panel opening on Buffs counts as entering it (WoW Forever: All Specs).
+                ns.BM_EnterAllSpecs()
                 if not ns._bmRoot then
                     C_Timer.After(0, function()
                         if EllesmereUI:GetActiveModule() == "EllesmereUIRaidFrames" then
@@ -6891,6 +7080,8 @@ initFrame:SetScript("OnEvent", function(self)
         local origSelectPage = EllesmereUI.SelectPage
         EllesmereUI.SelectPage = function(self, pageName, ...)
             _partyCtx = (pageName == PAGE_PARTY)
+            -- Entering Buffs from another page (not a rebuild while on it): WoW Forever opens it on All Specs.
+            if pageName == PAGE_BUFFS and EllesmereUI:GetActivePage() ~= PAGE_BUFFS then ns.BM_EnterAllSpecs() end
             -- Party tab excludes synced sections from inline search; cleared on every other page (any module) so the hook can never leak.
             EllesmereUI._searchExcludeSection = (pageName == PAGE_PARTY) and ns._PartySearchExclude or nil
             EllesmereUI._onInlineSearch = (pageName == PAGE_PARTY) and ns._PartySearchOverlaySync or nil
