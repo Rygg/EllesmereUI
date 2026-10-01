@@ -425,15 +425,27 @@ local function UpdateOverlayVisuals()
                         cg = entry.glowColor.g or 0.788
                         cb = entry.glowColor.b or 0.137
                     end
+                    -- Blackout on a CDM icon sits BELOW its cooldown swipe/countdown,
+                    -- at the per-icon Blackout's level (+12): under the border (+13)
+                    -- and the cooldown widget (+14). An action button's cooldown
+                    -- shares the button's own level, so no level lies between its
+                    -- icon and its swipe: there the fill takes the normal level like
+                    -- every other style and covers the whole button, swipe included.
+                    local styleEntry = ns.GLOW_STYLES and ns.GLOW_STYLES[style]
+                    local isFill = styleEntry and styleEntry.solidFill
+                    overlay:SetFrameLevel(glowParent:GetFrameLevel() + ((isFill and gpfc) and 12 or 15))
+                    -- The fill opacity rides opts only for Blackout (fresh table per
+                    -- start: the combat-gate record keeps opts by reference).
                     if gateSt then
                         -- Both gate masks travel as data (mask2 is nil unless the
                         -- operator needs the upper gate): the Show Glows Only in
                         -- Combat replay restarts from the recorded opts, so a mask
                         -- bound out here would be missing on every texture that
                         -- replay creates fresh.
-                        StartNativeGlow(overlay, style, cr, cg, cb, { maskWith = gateSt.mask, maskWith2 = gateSt.mask2 })
+                        StartNativeGlow(overlay, style, cr, cg, cb, { maskWith = gateSt.mask, maskWith2 = gateSt.mask2,
+                            alpha = isFill and entry.glowAlpha or nil })
                     else
-                        StartNativeGlow(overlay, style, cr, cg, cb)
+                        StartNativeGlow(overlay, style, cr, cg, cb, isFill and { alpha = entry.glowAlpha } or nil)
                     end
                 else
                     StopNativeGlow(overlay)

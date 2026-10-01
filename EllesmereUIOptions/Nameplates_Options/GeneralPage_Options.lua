@@ -634,20 +634,20 @@ local function BuildGeneralPage(pageName, parent, yOffset)
     local dispelDesc = npDispelGlowDesc
     local dispelGlowDropdown = GO.DropdownSpec(dispelDesc, "Dispel Glow Style")
     -- Enemy Buff Filter (replaces the retired Show All Enemy Buffs toggle;
-    -- npEnemyBuffFilter, default "important" for EVERYONE -- a deliberate
-    -- new default, the old key is an inert orphan). UNION semantics
-    -- (2026-08-17): Important = important OR dispellable (two engine
-    -- groups); Dispellable = dispellable only; the removed "all" value
-    -- reads back as important. The Dispel Glow never changes the filters
-    -- -- it is just the style the dispellable group wears, so every shown
-    -- dispellable buff glows when a style is set.
+    -- npEnemyBuffFilter, default "important", "showall" on WoW Forever; the
+    -- old key is an inert orphan). UNION semantics: Important = important OR
+    -- dispellable (two engine groups); Dispellable = dispellable only; Show
+    -- All = every buff; the removed "all" value reads back as important.
+    -- The Dispel Glow never changes the filters -- it is just the style the
+    -- dispellable group wears, so every shown dispellable buff glows when a
+    -- style is set.
     local buffFilterDropdown = { type="dropdown", text="Enemy Buff Filter",
-        tooltip = "Which enemy buffs show on nameplates. Important shows the buffs Blizzard flags for enemy nameplates plus anything dispellable; Only Dispellable shows just the buffs that can be dispelled, purged or soothed. With a Dispel Glow style set, every dispellable buff shown glows.",
-        values = { important = "Important", dispellable = "Only Dispellable" },
-        order = { "important", "dispellable" },
+        tooltip = "Which enemy buffs show on nameplates. Important shows the buffs Blizzard flags for enemy nameplates plus anything dispellable; Only Dispellable shows just the buffs that can be dispelled, purged or soothed; Show All shows every buff. With a Dispel Glow style set, every dispellable buff shown glows.",
+        values = { important = "Important", dispellable = "Only Dispellable", showall = "Show All" },
+        order = { "important", "dispellable", "showall" },
         getValue = function()
             local m = DBVal("npEnemyBuffFilter")
-            if m == "dispellable" then return m end
+            if m == "dispellable" or m == "showall" then return m end
             return "important"
         end,
         setValue = function(v)
@@ -673,6 +673,7 @@ local function BuildGeneralPage(pageName, parent, yOffset)
 
     local function hashLineOff() return not (DBVal("hashLineEnabled")) end
 
+    local row
     row, h = W:DualRow(parent, y,
         { type="toggle", text="Show Hash Line on Target at Percent",
           getValue=function() return DBVal("hashLineEnabled") or false end,
@@ -1192,8 +1193,8 @@ local function BuildGeneralPage(pageName, parent, yOffset)
     -- debuff Blood spec applies.
     do
         local _, classFile = UnitClass("player")
-        local specIdx = GetSpecialization and GetSpecialization()
-        local specID = specIdx and GetSpecializationInfo(specIdx)
+        local specIdx = C_SpecializationInfo.GetSpecialization()
+        local specID = specIdx and C_SpecializationInfo.GetSpecializationInfo(specIdx)
         if classFile == "DEATHKNIGHT" and specID == 250 then
             _, h = W:DualRow(parent, y,
                 { type="toggle", text="Hide Copies of Blood Plague",

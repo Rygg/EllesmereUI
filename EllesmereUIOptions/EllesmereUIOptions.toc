@@ -13,6 +13,9 @@
 # mirrors the original suite load order (parent files, then children A-Z).
 EllesmereUI_Widgets.lua
 EllesmereUI_GlowOptions.lua
+EUI_Colors_Options.lua
+EUI_Profiles_Options.lua
+EUI_WhatsNew_Options.lua
 EUI__General_Options.lua
 EUI_Fonts_Options.lua
 EUI_Textures_Options.lua
@@ -21,11 +24,21 @@ EUI_Gamepad_Options.lua
 EUI_Style_Options.lua
 EUI_PartyMode_Options.lua
 
+ActionBars_Options\AnimationsPage_Options.lua
+ActionBars_Options\BarAppearance_Options.lua
+ActionBars_Options\BarVisibilityLayout_Options.lua
+ActionBars_Options\LivePreview_Options.lua
+ActionBars_Options\MenuBagsXPPage_Options.lua
 EUI_ActionBars_Options.lua
 EUI_AuraBuffReminders_Options.lua
 EUI_Bags_Options.lua
 EUI_BlizzardSkin_Options.lua
 EUI_Chat_Options.lua
+CooldownManager_Options\BarsPage_Options.lua
+CooldownManager_Options\BuffBarsPage_Options.lua
+CooldownManager_Options\LivePreview_Options.lua
+CooldownManager_Options\Pickers_Options.lua
+CooldownManager_Options\SpellPicker_Options.lua
 EUI_CooldownManager_Options.lua
 EUI_CooldownManager_TalentConditions.lua
 EUI_DamageMeters_Options.lua

@@ -130,6 +130,26 @@ function ns.UF_Ask3DPortraits(onConfirm)
     return true
 end
 
+-- Separate acknowledgement: enabling 3D does not opt into 2D model lookups.
+function ns.UF_Ask2DMirroredPortraits(onConfirm)
+    if EllesmereUIDB and EllesmereUIDB.dismissed2DMirrorWarning then return false end
+    EllesmereUI:ShowConfirmPopup({
+        title       = "2D Mirrored Portraits",
+        message     = "2D mirrored portraits may cause a slight loss in performance efficiency. Do you want to enable them?",
+        confirmText = "Enable",
+        cancelText  = "Cancel",
+        onConfirm   = function()
+            if not EllesmereUIDB then EllesmereUIDB = {} end
+            EllesmereUIDB.dismissed2DMirrorWarning = true
+            onConfirm()
+        end,
+        onCancel    = function()
+            EllesmereUI:RefreshPage()
+        end,
+    })
+    return true
+end
+
 -- Dragon Strata dropdown (the PORTRAIT section's dragon cog): Match Frame
 -- keeps the frame's own strata, then the base stratas.
 do

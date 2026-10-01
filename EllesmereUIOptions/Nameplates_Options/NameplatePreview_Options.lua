@@ -8,6 +8,32 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 local ns = EllesmereUI._ModuleNS["EllesmereUINameplates"]
 if not ns then return end  -- module disabled: no options page
 
+-- The name slot's Strata, as on the live plate: a slot's text host sits at
+-- level 900 in the slot's strata and the aura icons at 800 in MEDIUM (HIGH with
+-- Raise Strata). MEDIUM keeps the name where the preview's text tier puts it
+-- (over the auras, under raised ones); LOW and BACKGROUND draw it under every
+-- aura, HIGH and up over raised auras too, its raid marker with it. Preview
+-- levels over the health bar: text +10/+11, auras +9, raised auras +13 (their
+-- duration text +15). The refresh re-parents the name and its marker to the
+-- text tier before this runs, so MEDIUM needs nothing.
+local function PreviewNameStrata(pf, health, nameFS, nameRaidFrame, strata)
+    if strata == "MEDIUM" then return end
+    local low = (strata == "BACKGROUND" or strata == "LOW")
+    local key = low and "_npNameLowHost" or "_npNameHighHost"
+    local host = pf[key]
+    if not host then
+        host = CreateFrame("Frame", nil, pf)
+        host:SetAllPoints(health)
+        pf[key] = host
+    end
+    host:SetFrameLevel(health:GetFrameLevel() + (low and 7 or 16))
+    nameFS:SetParent(host)
+    if nameRaidFrame:IsShown() then
+        nameRaidFrame:SetParent(host)
+        nameRaidFrame:SetFrameLevel(host:GetFrameLevel() + 1)
+    end
+end
+
 --- Build the nameplate preview in the content header area: an exact 1:1
 --- replica of a real enemy nameplate (same pixel sizes, anchors, fonts,
 --- borders; no glow, no added effects).
@@ -1267,6 +1293,14 @@ local function BuildNameplatePreview(parent, parentW)
             elseif clPos == "bottom" then
                 classIcon:SetPoint("TOP", cast, "BOTTOM", clXOff, -2 + clYOff)
             end
+            -- The quest mark while the Rare Indicator is off (or under the WoW
+            -- Forever look, whose plates show no elite or rare marks).
+            if DBVal("classificationHideRare") or EllesmereUI.BlizzStyle.Forever("nameplates") then
+                classIcon:SetAtlas("Crosshair_Quest_64")
+            else
+                classIcon:SetTexture("Interface\\AddOns\\EllesmereUI\\media\\elite-rare-indicator.png")
+                classIcon:SetTexCoord(0, 1, 0, 1)
+            end
             classIcon:Show()
             if pf._classOverlay then pf._classOverlay:Show() end
         end
@@ -1670,6 +1704,8 @@ local function BuildNameplatePreview(parent, parentW)
         ns.ReflowFontString(nameFS)
         if DBVal("hideEnemyNameWhileCasting") == true then nameFS:Hide() end
         LayoutPreviewNameRaidMarker()
+        PreviewNameStrata(pf, health, nameFS, nameRaidFrame,
+            pvNameSlotKey and DBVal(pvNameSlotKey .. "Strata") or "MEDIUM")
 
         -- Health bar color: always uses "enemies in combat" color
         local eic = (DB() and DB().enemyInCombat) or defaults.enemyInCombat
