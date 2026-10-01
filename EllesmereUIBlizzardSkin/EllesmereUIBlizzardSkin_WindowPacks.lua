@@ -7129,12 +7129,7 @@ WSkin.RegisterWindow({
     apply = function()
         -- Micro buttons are secure: if this runs mid-combat (reload during a fight), defer the pass to end of combat.
         if InCombatLockdown() then
-            local w = CreateFrame("Frame")
-            w:RegisterEvent("PLAYER_REGEN_ENABLED")
-            w:SetScript("OnEvent", function(self)
-                self:UnregisterAllEvents()
-                pcall(Skin_MicroMenu)
-            end)
+            ns.CombatQueue.Defer("MicroMenuSkin", function() pcall(Skin_MicroMenu) end)
             return
         end
         pcall(Skin_MicroMenu)
@@ -9784,6 +9779,21 @@ end
 --  text/icon wells; the icon grid and selected-macro icon stay stock content.
 -------------------------------------------------------------------------------
 do
+-- Icon grid slot art at 50%: every texture but the icon, hover and selection.
+-- Runs per grid button on each ScrollBox Update (every frame while scrolling),
+-- so it walks GetRegions' returns directly instead of building a table.
+local function DimSlotArt(btn, ...)
+    for i = 1, select("#", ...) do
+        local r = (select(i, ...))
+        if r and r ~= btn.Icon and r ~= btn.Highlight
+           and r ~= btn.SelectedTexture
+           and r.IsObjectType and r:IsObjectType("Texture") then
+            r:SetAlpha(0.5)
+        end
+    end
+end
+local function DimSlot(btn) DimSlotArt(btn, btn:GetRegions()) end
+
 -- Name-and-icon picker popup (IconSelectorPopupFrameTemplate): house panel,
 -- themed name input + buttons + type dropdown, white texts, icon grid slot art
 -- at 50% (matching the main selector grid).
@@ -9834,17 +9844,7 @@ local function Skin_MacroPopup()
         if not gd.iconDim then
             gd.iconDim = function()
                 if gBox.ForEachFrame and gBox:IsVisible() then
-                    gBox:ForEachFrame(function(btn)
-                        local regions = { btn:GetRegions() }
-                        for i = 1, #regions do
-                            local r = regions[i]
-                            if r and r ~= btn.Icon and r ~= btn.Highlight
-                               and r ~= btn.SelectedTexture
-                               and r.IsObjectType and r:IsObjectType("Texture") then
-                                r:SetAlpha(0.5)
-                            end
-                        end
-                    end)
+                    gBox:ForEachFrame(DimSlot)
                 end
             end
             hooksecurefunc(gBox, "Update", WSkin.Debounce(gd.iconDim))
@@ -9926,17 +9926,7 @@ local function Skin_Macros()
             if not seld.iconDim then
                 seld.iconDim = function()
                     if sBox.ForEachFrame and sBox:IsVisible() then
-                        sBox:ForEachFrame(function(btn)
-                            local regions = { btn:GetRegions() }
-                            for i = 1, #regions do
-                                local r = regions[i]
-                                if r and r ~= btn.Icon and r ~= btn.Highlight
-                                   and r ~= btn.SelectedTexture
-                                   and r.IsObjectType and r:IsObjectType("Texture") then
-                                    r:SetAlpha(0.5)
-                                end
-                            end
-                        end)
+                        sBox:ForEachFrame(DimSlot)
                     end
                 end
                 hooksecurefunc(sBox, "Update", WSkin.Debounce(seld.iconDim))
@@ -11987,6 +11977,17 @@ function LP.SkinRollFrame(f)
     end
 
     LP.Bar(f.Timer or f.Bar or f.StatusBar)
+
+    -- Bonus Roll: its timer lives on PromptFrame, parked by Blizzard one frame
+    -- level BELOW the window so the window's own art frames it. The shell
+    -- backdrop is drawn on the window, so under it the bar all but vanishes:
+    -- it rides one level above the window instead (the roll buttons' level).
+    local prompt = f.PromptFrame
+    local ptimer = prompt and prompt.Timer
+    if ptimer and not ptimer:IsForbidden() then
+        LP.Bar(ptimer)
+        ptimer:SetFrameLevel(f:GetFrameLevel() + 1)
+    end
 
     -- Name keeps its item-quality color; only the face changes.
     if f.Name then WSkin.Font(f.Name) end
