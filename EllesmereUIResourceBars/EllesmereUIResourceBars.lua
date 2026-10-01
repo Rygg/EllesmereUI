@@ -1421,6 +1421,7 @@ local DEFAULTS = {
             showGCDBoundary   = false,
             gcdBoundaryR = 1.0, gcdBoundaryG = 0.82, gcdBoundaryB = 0.0, gcdBoundaryA = 0.95,
             coloredEmpowerStages = false,  -- Color empowered spells from red to green per stage
+            outOfRangeGray = false,  -- Gray fill while the target is out of the cast's range
             showTotalDuration = false,
             latencyEnabled    = false,
             latencyShowText   = false,
@@ -9118,6 +9119,10 @@ else
         fillTex:SetVertexColor(fR, fG, fB, fA * fillOp)
     end
 end
+    -- The fill was just repainted from the settings: a live cast re-resolves its
+    -- cached settings on the next tick and re-reads the Out of Range Gray.
+    castBarFrame._rangeOut = nil
+    castBarFrame._cstKey = nil
 
     local spark = castBarFrame._spark
     -- Blizzard Style: the stock pip replaces the spark art (once; the swap is
@@ -9727,6 +9732,18 @@ UpdateCastBar = function(dt)
         if castBarFrame._rawFill and not castBarFrame._nativeFill and ns._rawFillDriver then
             ns._rawFillDriver:Show()
         end
+        -- Out of Range Gray: armed for this cast only while the option is on and
+        -- the spell has a range (self casts, crafting and mounts never read it).
+        local sid = castBarFrame._spellID
+        castBarFrame._cstRangeSpell = (cb.outOfRangeGray and sid and C_Spell.SpellHasRange(sid)) and sid or nil
+        castBarFrame._cstRangeAt = 0
+    end
+    -- Out of Range Gray: at most five target range reads a second, on this tick,
+    -- during an armed cast; the fill repaints only when the answer flips.
+    local rangeSpell = castBarFrame._cstRangeSpell
+    if rangeSpell and now >= castBarFrame._cstRangeAt then
+        castBarFrame._cstRangeAt = now + 0.2
+        ns.ERB_CastRangeTint(C_Spell.IsSpellInRange(rangeSpell, "target") == false)
     end
     local showTimer = castBarFrame._cstShowTimer
 
@@ -9771,7 +9788,7 @@ UpdateCastBar = function(dt)
         end
 
         -- Apply empowered stage coloring if enabled
-        if castBarFrame._empowering and castBarFrame._cstEmpStages then
+        if castBarFrame._empowering and castBarFrame._cstEmpStages and not castBarFrame._rangeOut then
             local numStages = castBarFrame._numStages or 0
             local stage = GetCurrentEmpowerStage(progress, numStages)
             local r, g, b = GetEmpowerStageColor(stage, numStages)
@@ -9946,6 +9963,7 @@ function ns.ShowIdleCastBar()
     castBarFrame._nativeFill = nil
     castBarFrame._cstKey = nil
     if ns._rawFillDriver then ns._rawFillDriver:Hide() end
+    if castBarFrame._rangeOut then ns.ERB_CastRangeTint(false) end
 
     -- Cast decoration has nothing to show without a cast. The spark in
     -- particular is anchored to the RIGHT edge of the fill, so at value 0 it
@@ -10000,6 +10018,7 @@ OnCastStart = function()
     castBarFrame._startTime = startTimeMS / 1000
     castBarFrame._endTime = endTimeMS / 1000
     castBarFrame._spellName = name
+    castBarFrame._spellID = spellID
     castBarFrame._totalDurSuffix = " / " .. format("%.1f", (endTimeMS - startTimeMS) / 1000)
     castBarFrame._nameText:SetText(name)
     ns.ERB_SetBlizzCastFill("cast")
@@ -10058,6 +10077,7 @@ OnChannelStart = function()
     castBarFrame._startTime = startTimeMS / 1000
     castBarFrame._endTime = endTimeMS / 1000
     castBarFrame._spellName = name
+    castBarFrame._spellID = spellID
     castBarFrame._totalDurSuffix = " / " .. format("%.1f", (endTimeMS - startTimeMS) / 1000)
     castBarFrame._nameText:SetText(name)
     ns.ERB_SetBlizzCastFill("channel")
@@ -10166,15 +10186,10 @@ local function OnChannelStop()
     end)
 end
 
--- Undo the per-stage empower tint and put the configured fill back. Shared by
--- OnEmpowerStop and OnCastStop: the 1s-overrun safety path routes a missed
--- EMPOWER_STOP through OnCastStop, which clears _empowering, and OnEmpowerStop
--- then early-returns on that very flag -- so without this call there the stage
--- tint stayed painted for the rest of the session, the same stuck-fill symptom
--- by a second route. On ns to respect the 200-local cap.
-ns.ResetEmpowerFillColor = function()
-    if not (castBarFrame and castBarFrame._empowerColorApplied) then return end
-    castBarFrame._empowerColorApplied = false
+-- Put the configured fill back after a tint (empower stages, Out of Range
+-- Gray): Blizzard Style white, the gradient re-issued, or the solid colour.
+-- On ns to respect the 200-local cap.
+ns.ERB_RestoreCastFill = function()
     local cb = ERB.db.profile.castBar
     -- Blizzard Style (build stamp): the fill atlas is its own colour; restore plain white.
     if castBarFrame._blizzFill then
@@ -10212,6 +10227,30 @@ ns.ResetEmpowerFillColor = function()
     else
         local fillTex = castBarFrame._bar:GetStatusBarTexture()
         fillTex:SetVertexColor(fR, fG, fB, fA * ((cb.fillOpacity or 100) / 100))
+    end
+end
+
+-- Undo the per-stage empower tint. Shared by OnEmpowerStop and OnCastStop: the
+-- 1s-overrun safety path routes a missed EMPOWER_STOP through OnCastStop, which
+-- clears _empowering, and OnEmpowerStop then early-returns on that very flag --
+-- so without this call there the stage tint stayed painted for the rest of the
+-- session, the same stuck-fill symptom by a second route.
+ns.ResetEmpowerFillColor = function()
+    if not (castBarFrame and castBarFrame._empowerColorApplied) then return end
+    castBarFrame._empowerColorApplied = false
+    ns.ERB_RestoreCastFill()
+end
+
+-- Out of Range Gray (castBar.outOfRangeGray): the fill turns gray while the
+-- target is out of the cast's range and takes its configured paint back when it
+-- returns or the cast ends. Writes only on a flip.
+ns.ERB_CastRangeTint = function(out)
+    if (castBarFrame._rangeOut or false) == out then return end
+    castBarFrame._rangeOut = out or nil
+    if out then
+        castBarFrame._bar:GetStatusBarTexture():SetVertexColor(0.4, 0.4, 0.4, castBarFrame._cstFillAlpha or 1)
+    else
+        ns.ERB_RestoreCastFill()
     end
 end
 
@@ -10323,6 +10362,7 @@ OnEmpowerStart = function()
     castBarFrame._startTime = startTimeMS / 1000
     castBarFrame._endTime = endTimeMS / 1000
     castBarFrame._spellName = name
+    castBarFrame._spellID = spellID
     castBarFrame._totalDurSuffix = " / " .. format("%.1f", (endTimeMS - startTimeMS) / 1000)
     HideLatencyOverlay()
     castBarFrame._nameText:SetText(name)
@@ -11771,13 +11811,10 @@ local function OnEvent(self, event, ...)
         end
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         -- Route to manual resource trackers (12.0+ secret-value safe)
-        local unit, castGUID, spellID = ...
+        local unit, _, spellID = ...
         if unit == "player" then
             HandleIronfurCast(spellID)
             IP.HandleCast(spellID)
-            if EllesmereUI then
-                EllesmereUI.HandleTipOfTheSpear(event, unit, castGUID, spellID)
-            end
             if cachedSecondary and (cachedSecondary.type == "custom"
                or cachedSecondary.power == "IRONFUR_BAR") then
                 UpdateSecondaryResource()
@@ -11788,9 +11825,6 @@ local function OnEvent(self, event, ...)
         wipe(ironfurTicks)
         ironfurGoEUntil = 0
         IP.hashEndTime = 0
-        if EllesmereUI then
-            EllesmereUI.HandleTipOfTheSpear(event)
-        end
     elseif event == "PLAYER_ENTERING_WORLD" then
         C_Timer.After(0.5, function()
             ERB:ApplyAll()

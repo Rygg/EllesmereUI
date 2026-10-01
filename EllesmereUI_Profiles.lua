@@ -1733,11 +1733,9 @@ end
 -- Blizzard flag is, else eui. `active` names the module's latched key getter;
 -- optional `extra` names a module getter that is handed the incoming module
 -- profile and returns true when another latched, reload-gated choice would
--- change (Raid Frames: the Party page's Frame Style). `root` reads the flags
--- from the incoming profile's root instead of its module table (the
--- Character Sheet, which has no module profile); `data` names the incoming
--- profile's addons key when it is not the module folder (the Skyriding HUD's
--- own DB inside Blizz UI Enhanced); `retailOnly` skips the entry on WoW
+-- change (Raid Frames: the Party page's Frame Style). `data` names the
+-- incoming profile's addons key when it is not the module folder (the
+-- Skyriding HUD's own DB inside Blizz UI Enhanced); `retailOnly` skips the entry on WoW
 -- Forever (no Style row there, its getter always reads eui or is absent).
 -- `forever` (read on the Forever client only) names the sibling flag of the
 -- WoW Forever variant of Blizzard Style (set together with the Blizzard flag)
@@ -1772,8 +1770,6 @@ local STYLE_FLAGS = {
     { folder = "EllesmereUIChat",            key = "useBlizzardStyle",     classic = "useClassicStyle",     sub = "chat",    active = "ChatStyle",
       forever = "useForeverStyle", foreverActive = "ChatForeverFlag" },
     { folder = "EllesmereUIRaidFrames",      key = "useBlizzardStyle",     classic = "useClassicStyle",     active = "RF_Style", extra = "RF_PartyKitChanged" },
-    { folder = "EllesmereUIBlizzardSkin",    key = "charSheetUseBlizzardStyle", classic = "charSheetUseClassicStyle", root = true, active = "CharSheetStyle",
-      forever = "charSheetUseForeverStyle", foreverActive = "CharSheetForever" },
     { folder = "EllesmereUIBlizzardSkin",    key = "useBlizzardStyle",     classic = "useClassicStyle",     data = "EllesmereUIDragonRiding", retailOnly = true, active = "EDR_Style" },
 }
 local function StyleKeyOfFlags(p, f)
@@ -1817,7 +1813,7 @@ function EllesmereUI.ProfileChangesStyle(profileData)
         if mns and not (f.retailOnly and EllesmereUI.IS_FOREVER) then
             local cur = RenderedStyleOf(f, mns)
             if cur ~= nil then
-                local incoming = f.root and profileData or profileData.addons[f.data or f.folder]
+                local incoming = profileData.addons[f.data or f.folder]
                 if f.sub and type(incoming) == "table" then incoming = incoming[f.sub] end
                 if cur ~= StyleKeyOfFlags(incoming, f) then return true end
                 -- `extra`: a reload-gated choice under the same style (the
@@ -1858,8 +1854,7 @@ function EllesmereUI.RenderedLook()
         if look == nil then
             local f = eitherBlizz
             local p = EllesmereUI.GetActiveProfileData()
-            local t = p
-            if p and not f.root then t = type(p.addons) == "table" and p.addons[f.data or f.folder] end
+            local t = p and type(p.addons) == "table" and p.addons[f.data or f.folder] or nil
             if f.sub and type(t) == "table" then t = t[f.sub] end
             if type(t) == "table" and t[(f.key:gsub("Blizzard", "Forever", 1))] then return "forever" end
             return "blizzard"
@@ -3417,15 +3412,10 @@ function EllesmereUI.ImportProfile(importStr, profileName)
         -- carries euiAccent, so the imported value wins; an old string leaves
         -- merged.euiAccent inherited from the current profile (correct fallback).
         if imported.euiAccent then merged.euiAccent = DeepCopy(imported.euiAccent) end
-        -- The character sheet style and the whole-UI window look are
-        -- profile-root keys: take the exporter's values, never the
-        -- recipient's (an absent key reads as the EllesmereUI look).
-        merged.charSheetUseBlizzardStyle = imported.charSheetUseBlizzardStyle
-        merged.charSheetUseClassicStyle  = imported.charSheetUseClassicStyle
-        merged.windowSkinLook            = imported.windowSkinLook
-        -- WoW Forever's sibling flag for the sheet rides with them there (the
-        -- WoW Forever style keeps the slot text on Blizzard's sheet).
-        if EllesmereUI.IS_FOREVER then merged.charSheetUseForeverStyle = imported.charSheetUseForeverStyle end
+        -- The whole-UI window look is a profile-root key: take the exporter's
+        -- value, never the recipient's (an absent key reads as the
+        -- EllesmereUI look).
+        merged.windowSkinLook = imported.windowSkinLook
 
         -- Snap all positions to the physical pixel grid (imported profiles
         -- may come from a different version without pixel snapping)

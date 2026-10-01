@@ -634,7 +634,7 @@ local function BuildDisplayLayout(parent, y, ctx)
                 local sub = coreHeader:CreateFontString(nil, "OVERLAY")
                 sub:SetFont(rgn:GetFont())
                 sub:SetTextColor(1, 1, 1, 0.25)
-                sub:SetText(EllesmereUI.L("(one per slot)"))
+                sub:SetText(EllesmereUI.L("(one slot per element)"))
                 sub:SetPoint("LEFT", rgn, "RIGHT", 6, 0)
                 break
             end
@@ -661,6 +661,200 @@ local function BuildDisplayLayout(parent, y, ctx)
     optState.RefreshCoreEyes = function()
         if _refreshRaidMarkerEyePos then _refreshRaidMarkerEyePos() end
         if _refreshClassificationEyePos then _refreshClassificationEyePos() end
+    end
+
+    -- Each slot's control is a checkbox dropdown, one box per element: a view
+    -- over the same stored keys the single-choice dropdowns wrote (each
+    -- element's slot key, debuffIncludeCC and classificationIncludeFaction for
+    -- the two pairs that can share a slot) plus classificationHideRare /
+    -- classificationHideQuest, the two halves of the Rare/Quest indicator. The
+    -- halves are one frame, so they always share a slot and move together.
+    -- Only elements of one group can share a slot; the rest grey out while the
+    -- slot holds something. The single-choice dropdowns stay built, hidden,
+    -- under the checkbox dropdowns (the row label's empty-slot state).
+    local CORE_ORDER = { "debuffs", "buffs", "ccs", "raidmarker", "rare", "quest", "faction" }
+    local CORE_LABEL = {
+        debuffs = "Debuffs", buffs = "Buffs", ccs = "Crowd Control", raidmarker = "Raid Marker",
+        rare = "Rare Indicator", quest = "Quest Indicator", faction = "Faction",
+    }
+    local CORE_TIP = {
+        rare  = "Elite and rare marks. Always in the same slot as the Quest Indicator.",
+        quest = "Marks mobs for your active quests. Always in the same slot as the Rare Indicator.",
+    }
+    local CORE_GROUP = {
+        debuffs = "aura", ccs = "aura",
+        rare = "class", quest = "class", faction = "class",
+        buffs = "buffs", raidmarker = "raidmarker",
+    }
+
+    local function CoreHas(pos, k)
+        if k == "debuffs" then return DBVal("debuffSlot") == pos end
+        if k == "buffs" then return DBVal("buffSlot") == pos end
+        if k == "ccs" then
+            return DBVal("ccSlot") == pos
+                or (DBVal("debuffIncludeCC") == true and DBVal("debuffSlot") == pos)
+        end
+        if k == "raidmarker" then return DBVal("raidMarkerPos") == pos end
+        if k == "rare" then
+            return DBVal("classificationSlot") == pos and not DBVal("classificationHideRare")
+        end
+        if k == "quest" then
+            return DBVal("classificationSlot") == pos and not DBVal("classificationHideQuest")
+        end
+        if k == "faction" then
+            -- While Rare/Quest + Faction is on, a leftover faction slot is ignored.
+            if DBVal("classificationIncludeFaction") == true then
+                return DBVal("classificationSlot") == pos
+            end
+            return DBVal("factionSlot") == pos
+        end
+        return false
+    end
+
+    -- A checked box can always be unchecked.
+    local function CoreLocked(pos, k)
+        if CoreHas(pos, k) then return false end
+        if k == "rare" and EllesmereUI.BlizzStyle.Forever("nameplates") then return true end
+        local g = CORE_GROUP[k]
+        for i = 1, #CORE_ORDER do
+            local o = CORE_ORDER[i]
+            if CORE_GROUP[o] ~= g and CoreHas(pos, o) then return true end
+        end
+        return false
+    end
+
+    local function CoreLockTip(k)
+        if k == "rare" and EllesmereUI.BlizzStyle.Forever("nameplates") then
+            return "WoW Forever nameplates show no elite or rare marks."
+        end
+        return "Only Debuffs with Crowd Control, or the Rare and Quest Indicators with Faction, can share a slot."
+    end
+
+    local function CoreSet(pos, k, v)
+        local db = DB()
+        if k == "debuffs" then
+            if v then
+                local old = DBVal("debuffSlot")
+                local merged = DBVal("debuffIncludeCC") == true
+                if DBVal("ccSlot") == pos then
+                    -- CC already here on its own: the two become Debuffs + CC.
+                    db.ccSlot = "none"
+                    merged = true
+                elseif merged and old ~= pos then
+                    -- Leaving a Debuffs + CC slot: CC stays there on its own
+                    -- unless it already has a slot elsewhere.
+                    if old ~= "none" and DBVal("ccSlot") == "none" then db.ccSlot = old end
+                    merged = false
+                end
+                db.debuffSlot = pos
+                db.debuffIncludeCC = merged
+            else
+                if DBVal("debuffIncludeCC") == true and DBVal("ccSlot") == "none" then
+                    db.ccSlot = pos
+                end
+                db.debuffSlot = "none"
+                db.debuffIncludeCC = false
+            end
+        elseif k == "ccs" then
+            if v then
+                if DBVal("debuffSlot") == pos then
+                    db.debuffIncludeCC = true
+                    db.ccSlot = "none"
+                else
+                    db.debuffIncludeCC = false
+                    db.ccSlot = pos
+                end
+            else
+                if DBVal("debuffSlot") == pos then db.debuffIncludeCC = false end
+                if DBVal("ccSlot") == pos then db.ccSlot = "none" end
+            end
+        elseif k == "buffs" then
+            if v then db.buffSlot = pos
+            elseif DBVal("buffSlot") == pos then db.buffSlot = "none" end
+        elseif k == "raidmarker" then
+            if v then db.raidMarkerPos = pos
+            elseif DBVal("raidMarkerPos") == pos then db.raidMarkerPos = "none" end
+        elseif k == "rare" or k == "quest" then
+            local hideKey = (k == "rare") and "classificationHideRare" or "classificationHideQuest"
+            local otherKey = (k == "rare") and "classificationHideQuest" or "classificationHideRare"
+            if v then
+                local old = DBVal("classificationSlot")
+                if old ~= pos then
+                    -- Moving: a Faction badge riding along stays behind on its own.
+                    if DBVal("classificationIncludeFaction") == true then
+                        db.classificationIncludeFaction = false
+                        if old ~= "none" then db.factionSlot = old end
+                    end
+                    -- Brought back from None: only the half that was checked.
+                    if old == "none" then db[otherKey] = true end
+                    db.classificationSlot = pos
+                    -- Faction already here on its own joins them.
+                    if DBVal("factionSlot") == pos then
+                        db.classificationIncludeFaction = true
+                        db.factionSlot = "none"
+                    end
+                end
+                db[hideKey] = false
+            elseif DBVal(otherKey) then
+                -- The last half goes: the indicator leaves the slot, a Faction
+                -- badge riding along stays there on its own.
+                if DBVal("classificationIncludeFaction") == true then
+                    db.classificationIncludeFaction = false
+                    db.factionSlot = pos
+                end
+                db.classificationSlot = "none"
+                db.classificationHideRare = false
+                db.classificationHideQuest = false
+            else
+                db[hideKey] = true
+            end
+        elseif k == "faction" then
+            if v then
+                if DBVal("classificationSlot") == pos then
+                    db.classificationIncludeFaction = true
+                    db.factionSlot = "none"
+                else
+                    db.classificationIncludeFaction = false
+                    db.factionSlot = pos
+                end
+            else
+                if DBVal("classificationSlot") == pos then db.classificationIncludeFaction = false end
+                if DBVal("factionSlot") == pos then db.factionSlot = "none" end
+            end
+        end
+    end
+
+    local function InstallCoreCB(rgn, pos)
+        local ctrl = rgn._control
+        local ddW = ctrl and ctrl:GetWidth() or 0
+        if ddW < 50 then ddW = 170 end
+        local items = {}
+        for i = 1, #CORE_ORDER do
+            local k = CORE_ORDER[i]
+            items[i] = {
+                key = k, label = CORE_LABEL[k], tooltip = CORE_TIP[k],
+                lockedFn = function() return CoreLocked(pos, k) end,
+                lockedTooltip = function() return CoreLockTip(k) end,
+            }
+        end
+        local cbDD, cbDDRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+            rgn, ddW, rgn:GetFrameLevel() + 2, items,
+            function(k) return CoreHas(pos, k) end,
+            function(k, v)
+                CoreSet(pos, k, v)
+                RefreshAllSlots()
+                optState.RefreshCoreEyes()
+            end)
+        local p1, rel, p2, ax, ay
+        if ctrl then
+            p1, rel, p2, ax, ay = ctrl:GetPoint(1)
+            ctrl:Hide()
+        end
+        if p1 then cbDD:SetPoint(p1, rel, p2, ax, ay)
+        else PP.Point(cbDD, "RIGHT", rgn, "RIGHT", -20, 0) end
+        rgn._control = cbDD
+        rgn._lastInline = nil
+        EllesmereUI.RegisterWidgetRefresh(cbDDRefresh)
     end
 
     -- Slot-based offsets: pos .. "SlotXOffset" / "SlotYOffset"
@@ -1845,6 +2039,8 @@ local function BuildDisplayLayout(parent, y, ctx)
           disabledTooltip = "This option requires an aura or indicator to be assigned", rawTooltip = true,
           labelOnlyDisabled = true });  y = y - h
     if not EllesmereUI._prebuilding then
+    InstallCoreCB(coreRow1._leftRegion,  "top")
+    InstallCoreCB(coreRow1._rightRegion, "right")
     MakeCogIcon(coreRow1, "_leftRegion",  "top",      "Top")
     MakeCogIcon(coreRow1, "_rightRegion", "right",    "Right")
     end
@@ -1866,6 +2062,8 @@ local function BuildDisplayLayout(parent, y, ctx)
           disabledTooltip = "This option requires an aura or indicator to be assigned", rawTooltip = true,
           labelOnlyDisabled = true });  y = y - h
     if not EllesmereUI._prebuilding then
+    InstallCoreCB(coreRow2._leftRegion,  "left")
+    InstallCoreCB(coreRow2._rightRegion, "topright")
     MakeCogIcon(coreRow2, "_leftRegion",  "left",     "Left")
     MakeCogIcon(coreRow2, "_rightRegion", "topright", "Top Right")
     end
@@ -1887,6 +2085,8 @@ local function BuildDisplayLayout(parent, y, ctx)
           disabledTooltip = "This option requires an aura or indicator to be assigned", rawTooltip = true,
           labelOnlyDisabled = true });  y = y - h
     if not EllesmereUI._prebuilding then
+    InstallCoreCB(coreRow3._leftRegion,  "topleft")
+    InstallCoreCB(coreRow3._rightRegion, "bottom")
     MakeCogIcon(coreRow3, "_leftRegion", "topleft", "Top Left")
     MakeCogIcon(coreRow3, "_rightRegion", "bottom", "Bottom")
     end

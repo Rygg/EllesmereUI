@@ -218,6 +218,7 @@ local defaults = {
         playerThreatNearAggroColor = { r = 0.81, g = 0.72, b = 0.19 },
         -- Threat % text on the target and focus frames (WoW Forever only).
         threatPctEnabled  = false,
+        threatPctFocus    = false,
         threatPctPosition = "CENTER",
         threatPctColorByThreat = true,
         threatPctSize     = 12,
@@ -4180,7 +4181,6 @@ do
             return
         end
         -- Reapply after every model reload, even when the angle has not changed.
-        -- These angles/offsets still need visual verification with our camera.
         model:SetViewTranslation(15, 0)
         model:SetRotation(math.rad(angle), false)
         model._portraitMirrored = true
@@ -9328,7 +9328,7 @@ if EllesmereUI.IS_FOREVER then
         if not (frame and frame._textOverlay) then return end
         local fs = frame._threatPctText
         local p = db.profile
-        if p.threatPctEnabled then
+        if p.threatPctEnabled and (unit == "target" or p.threatPctFocus) then
             local isTanking, status, pct = UnitDetailedThreatSituation("player", unit)
             if type(pct) == "number" and (issecretvalue(pct) or pct ~= 0) then
                 if not fs then
@@ -11135,15 +11135,15 @@ local function CreateCustomClassPower(playerFrame, style)
     eventFrame:Show()
     if isCustom then
         -- Per-resource event registration: only register what each resource actually
-        -- needs. Icicles and Maelstrom Weapon are aura-driven; everything else polls
-        -- via OnUpdate (either Lua API changes mid-combat, or no reliable event exists).
-        local auraDriven    = (powerType == "MAELSTROM_WEAPON" or powerType == "ICICLES")
+        -- needs. Icicles, Maelstrom Weapon and Tip of the Spear are aura-driven; everything
+        -- else polls via OnUpdate (either Lua API changes mid-combat, or no reliable event exists).
+        local auraDriven    = (powerType == "MAELSTROM_WEAPON" or powerType == "ICICLES"
+            or powerType == "TIP_OF_THE_SPEAR")
         -- Warrior charge buffs are engine-driven end to end (the overlay owns
         -- the row: EllesmereUI_WarriorCharges): no poll, no cast events.
         local engineDriven  = (powerType == "WHIRLWIND_STACKS" or powerType == "SWEEPING_STRIKES")
         local needsOnUpdate = not auraDriven and not engineDriven
         local needsAura     = auraDriven
-        local needsCasts    = (powerType == "TIP_OF_THE_SPEAR")
 
         if needsOnUpdate then
             -- 10 Hz poll on the shared anim ticker (see ns._cpDriverTick):
@@ -11164,24 +11164,7 @@ local function CreateCustomClassPower(playerFrame, style)
         if needsAura then
             eventFrame:RegisterUnitEvent("UNIT_AURA", "player")
         end
-        if needsCasts then
-            eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
-            eventFrame:RegisterEvent("PLAYER_DEAD")
-            eventFrame:RegisterEvent("PLAYER_ALIVE")
-        end
-        eventFrame:SetScript("OnEvent", function(_, event, ...)
-            if event == "UNIT_SPELLCAST_SUCCEEDED" then
-                if not _G._ERB_AceDB and EllesmereUI then
-                    local unit, castGUID, spellID = ...
-                    if unit == "player" then
-                        EllesmereUI.HandleTipOfTheSpear(event, unit, castGUID, spellID)
-                    end
-                end
-            elseif event == "PLAYER_DEAD" or event == "PLAYER_ALIVE" then
-                if not _G._ERB_AceDB and EllesmereUI then
-                    EllesmereUI.HandleTipOfTheSpear(event)
-                end
-            end
+        eventFrame:SetScript("OnEvent", function()
             UpdatePips()
         end)
     else

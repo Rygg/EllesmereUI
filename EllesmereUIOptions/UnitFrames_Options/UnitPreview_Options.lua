@@ -791,7 +791,7 @@ function ns.UFO_BuildUnitPreview(parent, unitKey, side)
                 else txR, txG, txB = 0, 0, 1 end
             end
             pf._pR, pf._pG, pf._pB = txR, txG, txB
-            PV_FillColor(pf._powerFill, texPath, txR, txG, txB, settings.powerGradientEnabled, settings.powerGradientColor, settings.powerGradientDir, powerOpacity)
+            PV_FillColor(pf._powerFill, texPath, txR, txG, txB, settings.powerGradientEnabled, settings.powerGradientColor, settings.powerGradientDir, (settings.powerBarOpacity or 100) / 100)
         end
     end
 

@@ -1031,11 +1031,6 @@ local function TileBlizzardSkin(parent, y, W, tile)
               EllesmereUIDB.charSheetEnchantSize = v
               if EllesmereUI._refreshCharSheetSlotLabels then EllesmereUI._refreshCharSheetSlotLabels() end
           end }
-    -- WoW Forever: the slot text belongs to the EllesmereUI look and the WoW
-    -- Forever style there, so Blizzard Style and Classic WoW UI leave this
-    -- size nothing to drive.
-    local BS = EllesmereUI.BlizzStyle
-    if EllesmereUI.IS_FOREVER and BS and not BS.Forever("charsheet") then BS.Gate("charsheet", enchSizeCfg) end
     -- WoW Forever has no skyriding (the Dragon Riding HUD never loads there),
     -- so the enchant size sits alone in the last row.
     _, h = W:DualRow(parent, y,

@@ -5937,15 +5937,15 @@ local function HideSlotArt(btn)
 end
 
 -------------------------------------------------------------------------------
---  The action bars' chrome and the 20-segment data bars. Every action bar can
+--  The action bars' chrome and the data bars' dividers. Every action bar can
 --  carry end caps, left, right or both (the End Caps checklist), in the
 --  current look's art (the EllesmereUI style: the art the player picks), with
 --  its own size and offsets. WoW Forever: the metal frame round a bar and the
 --  dividers between its buttons (Show Bar Background, on by default on Action
---  Bar 1 only), the faction end caps (both sides on by default on Action Bar
---  1 only) and the data bar segments, from Blizzard's own atlases (they draw
---  the Forever art on that client). Built per bar the first time a piece is
---  on (LayoutBar's tail, out of combat, stamp-gated; ApplyDataBarLayout);
+--  Bar 1 only) and the faction end caps (both sides on by default on Action
+--  Bar 1 only), from Blizzard's own atlases (they draw the Forever art on
+--  that client). Built per bar the first time a piece is on (LayoutBar's
+--  tail, out of combat, stamp-gated; ApplyDataBarLayout for the data bars);
 --  off, nothing is built and a built piece hides. All on ns: the main chunk
 --  is at the 200-local cap.
 -------------------------------------------------------------------------------
@@ -5960,7 +5960,6 @@ ns.AB_FV_ART = {
     divV = { "ui-hud-actionbar-frame-divider-ThreeSlice-EdgeLeft",
              "ui-hud-actionbar-frame-divider-ThreeSlice-EdgeRight",
              "_ui-hud-actionbar-frame-divider-ThreeSlice-Center", 12, 12 },
-    xpDivider = "ui-hud-experiencebar-divider",
 }
 
 -- End caps per look: the art by faction (`art`, none while neutral) or the
@@ -6645,142 +6644,142 @@ function ns.AB_CapsSpanApply()
     end
 end
 
--- The 20 segments of Blizzard's experience bar on our XP / reputation / favor
--- bars: 19 dividers (horizontal bars only), each LEFT edge on a twentieth of
--- the width, 3 wide and 10/17 of the height, over the fill and under the text.
-function ns.AB_ForeverDataBarDividers(holder, w, h, orient, barKey)
-    local host = holder._fvDivHost
-    local cfg = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars and barKey and EAB.db.profile.bars[barKey]
-    -- Not gated to the WoW Forever style anymore: render when the standalone "Show Dividers"
-    -- toggle is on (any action-bar style), OR in the WoW Forever style (its always-on default).
-    if not (ns.AB_Forever() or (cfg and cfg.showDividers)) then
+-- Show Dividers on our XP / reputation / favor bars (the bar's showDividers):
+-- a dashed tick at every 5% and a full line at every 10% across the bar,
+-- inside its border (left to right on a horizontal bar, bottom to top on a
+-- vertical one), one physical pixel thick on whole pixels, over the fill
+-- and under the text. Divider Text labels the 10% lines (10%..90%), each
+-- centred on its line, drawn above it and nudged by the offsets (X along the
+-- label's reading direction, Y across it); rotateDividerText turns them to
+-- run along a vertical bar. A rotated string pivots about the top centre of
+-- its unrotated region, so a label's anchor is moved back by that
+-- displacement. Pooled on a child host built the first time the option is
+-- on; off, a built host hides.
+function ns.AB_DataBarDividers(holder, w, h, orient, s)
+    local host = holder._divHost
+    if not s.showDividers then
         if host then host:Hide() end
         return
     end
     if not host then
         host = CreateFrame("Frame", nil, holder)
         host:SetAllPoints(holder)
-        host._tex = {}
-        holder._fvDivHost = host
+        host._tick = {}
+        host._lbl = {}
+        holder._divHost = host
     end
     host:SetFrameLevel(holder:GetFrameLevel() + 2)
     host:Show()
-
-    -- Enhanced dividers (custom): a dashed tick every 5% and a FULL stroke every 10%, in two
-    -- configurable colours (tick5Color / tick10Color), following the bar's orientation
-    -- (vertical supported). Replaces the flat atlas dividers. Colours read from the bar's OWN
-    -- settings (barKey). Textures pool on host._tex; "along = 1 + pct% * barLen".
-    local tex = host._tex
+    local tick, lbl = host._tick, host._lbl
     local vertical = (orient == "VERTICAL")
-    local barLen   = (vertical and h or w) - 2
-    local crossLen = (vertical and w or h) - 2
-    local used = 0
-    local usedLbl = 0
-    local lbl = host._lbl
-    if not lbl then lbl = {}; host._lbl = lbl end
-    if barLen > 0 and crossLen > 0 then
-        local c5  = (cfg and cfg.tick5Color)  or {}
-        local c10 = (cfg and cfg.tick10Color) or {}
-        local r5, g5, b5    = c5.r  or 220/255, c5.g  or 167/255, c5.b  or 127/255
-        local r10, g10, b10 = c10.r or 1,       c10.g or 1,       c10.b or 1
-        local thick, dash, gap = 1, 2, 2
-        local function Next()
-            used = used + 1
-            local t = tex[used]
-            if not t then t = host:CreateTexture(nil, "OVERLAY"); tex[used] = t end
-            t:Show()
-            return t
+    -- The border's inner edge across the bar: 1 in, or a thicker solid
+    -- Custom Border's own width, so no line or dash reaches into it.
+    local e = 1
+    if s.customBorder then
+        local bt = s.borderTexture
+        if not bt or bt == "" or bt == "solid" then
+            local sz, px = ResolveBorderThickness(s)
+            e = max(1, floor((px or sz) + 0.5) * PP.mult)
         end
-        -- Divider Text (custom): 10%..90% labels at the full-stroke marks; own font-string
-        -- pool, reusing the main readout's vertical reorient rules (noReorientText/textReadDown).
-        local showLbl = cfg and cfg.showDividerText
-        local lc = (cfg and cfg.dividerTextColor) or {}
-        local lr, lg, lb = lc.r or 1, lc.g or 1, lc.b or 1
-        local lsz = (cfg and cfg.dividerTextSize) or 8
-        local loffX, loffY = (cfg and cfg.dividerTextOffX) or 0, (cfg and cfg.dividerTextOffY) or 0
-        -- Divider labels have their OWN reorient toggle (noReorientDividerText) separate from
-        -- the main readout, but share the read direction (textReadDown).
-        local lrot = 0
-        if vertical and not (cfg and cfg.noReorientDividerText) then
-            lrot = (cfg and cfg.textReadDown) and (-math.pi / 2) or (math.pi / 2)
-        end
-        -- Orientation-aware offsets: rotate (offX, offY) by lrot so X nudges along the label's
-        -- reading direction and Y across it, at any orientation.
-        local lcos, lsin = math.cos(lrot), math.sin(lrot)
-        -- Anchor: the base position of each label relative to the bar at its mark (offsets
-        -- nudge from there, so their caps stay small). Orientation-aware -- top/bottom sit the
-        -- label off the long edges when horizontal / off the mark when vertical, and vice versa.
-        local lanchor = (cfg and cfg.dividerTextAnchor) or "center"
-        local function NextLbl()
-            usedLbl = usedLbl + 1
-            local fs = lbl[usedLbl]
-            if not fs then fs = host:CreateFontString(nil, "OVERLAY"); lbl[usedLbl] = fs end
-            return fs
+    end
+    -- Length along the bar (the fill's) and across it, inside the border.
+    local L = (vertical and h or w) - 2
+    local C = (vertical and w or h) - 2 * e
+    local nTick, nLbl = 0, 0
+    if L > 0 and C > 0 then
+        local Snap, one = PP.Snap, PP.mult
+        local dash = max(one, Snap(2))
+        local gap = max(one, Snap(2))
+        local step = dash + gap
+        local count = max(1, floor((C + gap) / step))
+        local c0 = Snap(e)
+        local dash0 = c0 + Snap(max(0, (C - (count * step - gap)) / 2))
+        local full = Snap(e + C) - c0
+        local c = s.tick5Color
+        local r5, g5, b5 = c and c.r or 220 / 255, c and c.g or 167 / 255, c and c.b or 127 / 255
+        c = s.tick10Color
+        local r10, g10, b10 = c and c.r or 1, c and c.g or 1, c and c.b or 1
+        local showLbl = s.showDividerText
+        local lsz, lflag, lr, lg, lb, lrot, lcos, lsin, lox, loy, across
+        if showLbl then
+            local pi = math.pi
+            lsz = s.dividerTextSize or 8
+            lflag = EllesmereUI.GetFontOutlineFlag("actionBars")
+            c = s.dividerTextColor
+            lr, lg, lb = c and c.r or 1, c and c.g or 1, c and c.b or 1
+            lrot = (vertical and s.rotateDividerText) and (s.textReadDown and -pi / 2 or pi / 2) or 0
+            lcos, lsin = math.cos(lrot), math.sin(lrot)
+            local ox, oy = s.dividerTextOffX or 0, s.dividerTextOffY or 0
+            lox, loy = ox * lcos - oy * lsin, ox * lsin + oy * lcos
+            across = e + C / 2
         end
         for pct = 5, 95, 5 do
-            local along = 1 + (pct / 100) * barLen
+            local pos = Snap(1 + pct / 100 * L)
             if pct % 10 == 0 then
-                -- Full stroke spanning the cross axis.
-                local t = Next()
+                nTick = nTick + 1
+                local t = tick[nTick]
+                if not t then t = host:CreateTexture(nil, "OVERLAY"); tick[nTick] = t end
                 t:SetColorTexture(r10, g10, b10, 0.9)
                 t:ClearAllPoints()
                 if vertical then
-                    t:SetSize(crossLen, thick)
-                    t:SetPoint("BOTTOMLEFT", holder, "BOTTOMLEFT", 1, along - thick / 2)
+                    t:SetSize(full, one)
+                    t:SetPoint("BOTTOMLEFT", holder, "BOTTOMLEFT", c0, pos)
                 else
-                    t:SetSize(thick, crossLen)
-                    t:SetPoint("BOTTOMLEFT", holder, "BOTTOMLEFT", along - thick / 2, 1)
+                    t:SetSize(one, full)
+                    t:SetPoint("BOTTOMLEFT", holder, "BOTTOMLEFT", pos, c0)
                 end
+                t:Show()
                 if showLbl then
-                    local fs = NextLbl()
-                    fs:SetFont(FONT_PATH, lsz, EllesmereUI.GetFontOutlineFlag("actionBars"))
-                    fs:SetTextColor(lr, lg, lb, 1)
-                    fs:SetText(pct .. "%")
-                    if fs.SetRotation then fs:SetRotation(lrot) end
-                    fs:ClearAllPoints()
-                    local rx = loffX * lcos - loffY * lsin
-                    local ry = loffX * lsin + loffY * lcos
-                    local lp, bx, by
-                    if vertical then
-                        if lanchor == "left" then lp, bx, by = "RIGHT", 0, along
-                        elseif lanchor == "right" then lp, bx, by = "LEFT", crossLen, along
-                        elseif lanchor == "top" then lp, bx, by = "BOTTOM", crossLen / 2, along
-                        elseif lanchor == "bottom" then lp, bx, by = "TOP", crossLen / 2, along
-                        else lp, bx, by = "CENTER", crossLen / 2, along end
-                    else
-                        if lanchor == "top" then lp, bx, by = "BOTTOM", along, crossLen
-                        elseif lanchor == "bottom" then lp, bx, by = "TOP", along, 0
-                        elseif lanchor == "left" then lp, bx, by = "RIGHT", along, crossLen / 2
-                        elseif lanchor == "right" then lp, bx, by = "LEFT", along, crossLen / 2
-                        else lp, bx, by = "CENTER", along, crossLen / 2 end
+                    -- Slot k is the (10 * k)% line; its text is set once.
+                    nLbl = nLbl + 1
+                    local fs = lbl[nLbl]
+                    if not fs then
+                        fs = host:CreateFontString(nil, "OVERLAY")
+                        -- Sublevel 1: above the lines (OVERLAY 0) it sits on.
+                        fs:SetDrawLayer("OVERLAY", 1)
+                        -- The font first: SetText needs one.
+                        EllesmereUI.ApplyModuleFont(fs, FONT_PATH, lsz, "actionBars", lflag)
+                        fs:SetText(nLbl * 10 .. "%")
+                        lbl[nLbl] = fs
                     end
-                    fs:SetPoint(lp, holder, "BOTTOMLEFT", bx + rx, by + ry)
+                    EllesmereUI.ApplyModuleFont(fs, FONT_PATH, lsz, "actionBars", lflag)
+                    fs:SetTextColor(lr, lg, lb, 1)
+                    fs:SetRotation(lrot)
+                    local hh = fs:GetStringHeight()
+                    if not hh or hh <= 0 then hh = fs:GetLineHeight() end
+                    if not hh or hh <= 0 then hh = lsz end
+                    hh = hh / 2
+                    -- The line's centre along the bar (it spans pos to pos + one).
+                    local mid = pos + one / 2
+                    local x, y = mid, across
+                    if vertical then x, y = across, mid end
+                    fs:ClearAllPoints()
+                    fs:SetPoint("CENTER", holder, "BOTTOMLEFT",
+                        x + lox - hh * lsin, y + loy - hh * (1 - lcos))
                     fs:Show()
                 end
             else
-                -- Dashed segments along the cross axis, centered.
-                local unit = dash + gap
-                local count = max(1, floor((crossLen + gap) / unit))
-                local runLen = count * unit - gap
-                local startCross = 1 + max(0, (crossLen - runLen) / 2)
+                -- Dashes across the bar, the run centred.
                 for d = 0, count - 1 do
-                    local t = Next()
+                    nTick = nTick + 1
+                    local t = tick[nTick]
+                    if not t then t = host:CreateTexture(nil, "OVERLAY"); tick[nTick] = t end
                     t:SetColorTexture(r5, g5, b5, 0.9)
                     t:ClearAllPoints()
-                    local co = startCross + d * unit
                     if vertical then
-                        t:SetSize(dash, thick)
-                        t:SetPoint("BOTTOMLEFT", holder, "BOTTOMLEFT", co, along - thick / 2)
+                        t:SetSize(dash, one)
+                        t:SetPoint("BOTTOMLEFT", holder, "BOTTOMLEFT", dash0 + d * step, pos)
                     else
-                        t:SetSize(thick, dash)
-                        t:SetPoint("BOTTOMLEFT", holder, "BOTTOMLEFT", along - thick / 2, co)
+                        t:SetSize(one, dash)
+                        t:SetPoint("BOTTOMLEFT", holder, "BOTTOMLEFT", pos, dash0 + d * step)
                     end
+                    t:Show()
                 end
             end
         end
     end
-    for i = used + 1, #tex do if tex[i] then tex[i]:Hide() end end
-    for i = usedLbl + 1, #lbl do if lbl[i] then lbl[i]:Hide() end end
+    for i = nTick + 1, #tick do tick[i]:Hide() end
+    for i = nLbl + 1, #lbl do lbl[i]:Hide() end
 end
 
 -------------------------------------------------------------------------------
@@ -16696,6 +16695,91 @@ ns.ApplyDataBarBorder = function(holder, s)
     end
 end
 
+-- Places a data bar's readout. Unrotated: inside the bar at its textAnchor
+-- edge (4 in from a left or right end), nudged by the offsets. rotateText on
+-- a vertical bar turns it to run along the bar (textReadDown: reading down),
+-- the offsets turning with it (X along the reading direction, Y across it),
+-- placed by its drawn centre: a rotated string pivots about the top centre of
+-- its unrotated region, so the anchor is moved back by that displacement.
+-- Text Background (showTextBg): on the text itself while unrotated, so it
+-- follows every SetText; rotated, an upright box on the holder. _textPost:
+-- a rotated placement is measured from the string, so the bar's update
+-- re-places it after every SetText.
+function ns.DataBarPlaceText(frame, s)
+    local text = frame._text
+    local rot = 0
+    if s.rotateText and s.orientation == "VERTICAL" then
+        rot = s.textReadDown and -math.pi / 2 or math.pi / 2
+    end
+    -- SetRotation only while rotated, and once more on the way back.
+    if rot ~= 0 or frame._textRotated then
+        text:SetRotation(rot)
+        frame._textRotated = (rot ~= 0) or nil
+    end
+    local anchor = s.textAnchor
+    local ox, oy = s.textOffsetX or 0, s.textOffsetY or 0
+    local bgOn = s.showTextBg
+    local bg = frame._textBg
+    if bgOn and not bg then
+        bg = frame._textHost:CreateTexture(nil, "ARTWORK")
+        frame._textBg = bg
+    end
+    text:ClearAllPoints()
+    if rot == 0 then
+        local ap, padX = "CENTER", 0
+        if anchor == "top" then ap = "TOP"
+        elseif anchor == "bottom" then ap = "BOTTOM"
+        elseif anchor == "left" then ap, padX = "LEFT", 4
+        elseif anchor == "right" then ap, padX = "RIGHT", -4 end
+        text:SetPoint(ap, frame._textHost, ap, ox + padX, oy)
+        if bgOn then
+            -- 3 past the text's ends and 1 above and below it, none past the
+            -- edge a top or bottom anchor sets it flush with (the border's).
+            bg:ClearAllPoints()
+            bg:SetPoint("TOPLEFT", text, "TOPLEFT", -3, ap == "TOP" and 0 or 1)
+            bg:SetPoint("BOTTOMRIGHT", text, "BOTTOMRIGHT", 3, ap == "BOTTOM" and 0 or -1)
+        end
+        frame._textPost = nil
+    else
+        -- Drawn box: sw along the bar by sh across it; its centre (vx, vy)
+        -- from the holder's centre, inside the border.
+        local sw = text:GetStringWidth()
+        local sh = text:GetStringHeight()
+        if not sh or sh <= 0 then sh = text:GetLineHeight() end
+        if not sh or sh <= 0 then sh = s.textSize or 9 end
+        local vx, vy = 0, 0
+        if anchor == "top" or anchor == "bottom" then
+            vy = max(0, (s.height or 18) / 2 - 1 - 4 - sw / 2)
+            if anchor == "bottom" then vy = -vy end
+        elseif anchor == "left" or anchor == "right" then
+            vx = max(0, (s.width or 400) / 2 - 1 - sh / 2)
+            if anchor == "left" then vx = -vx end
+        end
+        local cs, sn = math.cos(rot), math.sin(rot)
+        vx = vx + ox * cs - oy * sn
+        vy = vy + ox * sn + oy * cs
+        local hh = sh / 2
+        text:SetPoint("CENTER", frame, "CENTER", vx - hh * sn, vy - hh * (1 - cs))
+        if bgOn then
+            -- No pad across the bar at a left or right anchor, where the
+            -- text sits flush with the border.
+            bg:ClearAllPoints()
+            bg:SetSize((anchor == "left" or anchor == "right") and sh or sh + 2, sw + 6)
+            bg:SetPoint("CENTER", frame, "CENTER", vx, vy)
+        end
+        frame._textPost = true
+    end
+    if bg then
+        if bgOn then
+            local c = s.textBgColor
+            bg:SetColorTexture(c and c.r or 0.06, c and c.g or 0.06, c and c.b or 0.08, c and c.a or 0.9)
+            bg:Show()
+        else
+            bg:Hide()
+        end
+    end
+end
+
 local function ApplyDataBarLayout(barKey)
     local frame = dataBarFrames[barKey]
     if not frame then return end
@@ -16729,42 +16813,17 @@ local function ApplyDataBarLayout(barKey)
         frame._restedBar:SetRotatesTexture(orient ~= "HORIZONTAL")
     end
 
-    -- Per-bar Text Size (default 9) + text X/Y offsets (default 0,0).
-    -- Re-applied here so the options slider and offset cog take effect live
-    -- through the existing ApplyDataBarLayout calls.
+    -- Per-bar Text Size (default 9) and the readout's placement (anchor,
+    -- offsets, rotation, background). Re-applied here so the options take
+    -- effect live through the existing ApplyDataBarLayout calls.
     if frame._text then
         frame._text:SetFont(FONT_PATH, s.textSize or 9, EllesmereUI.GetFontOutlineFlag("actionBars"))
-        -- WoW Forever: reorient the readout to run ALONG a vertical bar instead of overflowing
-        -- its narrow width. SetRotation pivots about the string center. Opt out via
-        -- noReorientText; textReadDown flips +90 (read bottom->top) to -90 (top->bottom).
-        local rot = 0
-        if orient == "VERTICAL" and not s.noReorientText then
-            rot = s.textReadDown and (-math.pi / 2) or (math.pi / 2)
-        end
-        -- Orientation-aware offsets: rotate the X/Y offset by the same angle so the sliders
-        -- stay intuitive -- X nudges along the reading direction, Y across it, at any rotation.
-        local ox, oy = s.textOffsetX or 0, s.textOffsetY or 0
-        local rc, rs = math.cos(rot), math.sin(rot)
-        -- Anchor: the readout's base position on the bar (offsets nudge from there so their
-        -- caps stay small). CENTER anchor point so SetRotation still pivots about the anchor.
-        local anchor = s.textAnchor or "center"
-        local ap = (anchor == "top" and "TOP") or (anchor == "bottom" and "BOTTOM")
-            or (anchor == "left" and "LEFT") or (anchor == "right" and "RIGHT") or "CENTER"
-        local aox, aoy = ox * rc - oy * rs, ox * rs + oy * rc
-        frame._text:ClearAllPoints()
-        frame._text:SetPoint("CENTER", frame, ap, aox, aoy)
-        if frame._text.SetRotation then frame._text:SetRotation(rot) end
-        -- Record the exact anchor + rotation so the text background can be given the IDENTICAL
-        -- transform (same holder point, same angle) and stay locked to the text regardless of
-        -- SetRotation's pivot -- anchoring the bg to the rotated fontstring desyncs.
-        frame._txAP, frame._txOX, frame._txOY, frame._txRot = ap, aox, aoy, rot
+        ns.DataBarPlaceText(frame, s)
     end
 
-    -- Data bar dividers: the WoW Forever always-on segments, OR the standalone "Show
-    -- Dividers" toggle in any action-bar style. _fvDivHost forces a call so turning it off
-    -- hides an existing host.
-    if frame._fvDivHost or ns.AB_Forever() or (s and s.showDividers) then
-        ns.AB_ForeverDataBarDividers(frame, w, h, orient, barKey)
+    -- Dividers: one boolean read while off; a built host is called to hide.
+    if frame._divHost or s.showDividers then
+        ns.AB_DataBarDividers(frame, w, h, orient, s)
     end
 
     -- Custom Border (one boolean read while off), then its reach for width /
@@ -16964,7 +17023,7 @@ local function UpdateXPBar()
     end
 
     text:SetText(strLevel .. strXP .. strRested)
-    if frame._fitTextBg then frame._fitTextBg() end
+    if frame._textPost then ns.DataBarPlaceText(frame, s) end
 
     EAB_VTABLE.ExtraBars.FinishManagedDataBarUpdate("XPBar", frame, s)
 end
@@ -16988,47 +17047,6 @@ local function CreateXPBar()
     restedBar:GetStatusBarTexture():SetDrawLayer("ARTWORK", 2)
     restedBar:Hide()
     holder._restedBar = restedBar
-
-    -- WoW Forever: Text Background (custom). A filled box behind the XP text so the Forever
-    -- XP dividers do not show through the glyphs and fragment them. On the text's own host
-    -- frame (above the dividers via frame level, below the text via ARTWORK vs the text's
-    -- OVERLAY); re-fit to the string in FitTextBg, called from UpdateXPBar after SetText.
-    -- On/off + colour come from the XPBar settings (showTextBg / textBgColor). Nil = off.
-    local textBg = holder._text:GetParent():CreateTexture(nil, "ARTWORK")
-    textBg:Hide()
-    holder._textBg = textBg
-    local function FitTextBg()
-        local cfg = EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars and EAB.db.profile.bars["XPBar"]
-        local t = holder._text
-        if not cfg or not cfg.showTextBg or not t then textBg:Hide(); return end
-        local sw, sh = t:GetStringWidth() or 0, t:GetStringHeight() or 0
-        if sw <= 0 or sh <= 0 or (t:GetText() or "") == "" then textBg:Hide(); return end
-        local padX, padY = 3, 1
-        local c = cfg.textBgColor or {}
-        textBg:SetColorTexture(c.r or 0.06, c.g or 0.06, c.b or 0.08, c.a or 0.9)
-        -- The box is a static (never-rotated) quad: axis-aligned since the readout is only ever
-        -- rotated by 0 or +/-90 degrees, so when reoriented we just swap its dimensions to stand it
-        -- upright. Its centre therefore == its anchor point exactly.
-        local rot = holder._txRot or 0
-        local bw, bh
-        if rot ~= 0 then bw, bh = sh + padY * 2, sw + padX * 2
-        else bw, bh = sw + padX * 2, sh + padY * 2 end
-        if textBg.SetRotation then textBg:SetRotation(0) end
-        textBg:SetSize(bw, bh)
-        -- SetRotation pivots the fontstring about the TOP-CENTRE of its (unrotated) region, so the
-        -- rendered text lands displaced from the region centre by (hh*sin, hh*(1-cos)), hh = half
-        -- the text height. Measured empirically: sh/2 at +90deg for font 9 (4.4) and font 22 (11).
-        -- This is 0 unrotated and flips sign for Read Downward, so the box tracks the text at any
-        -- size/angle. Anchor to the holder (not the rotated fontstring, which would desync).
-        local hh = sh / 2
-        local compX = hh * math.sin(rot)
-        local compY = hh * (1 - math.cos(rot))
-        textBg:ClearAllPoints()
-        textBg:SetPoint("CENTER", holder, holder._txAP or "CENTER",
-            (holder._txOX or 0) + compX, (holder._txOY or 0) + compY)
-        textBg:Show()
-    end
-    holder._fitTextBg = FitTextBg
 
     -- Tooltip. Click Through suppresses it: on a mouseover bar the holder keeps mouse
     -- motion only so the hover fade can see the cursor.
@@ -17165,11 +17183,13 @@ local function UpdateRepBar()
     frame._tipStanding, frame._tipCurrent, frame._tipMaximum = standing, current, maximum
     text:SetText(format("%s: %.0f%% [%s]", name, pct, standing))
 
-    -- Auto-size text if bar is too narrow
-    local barW = frame:GetWidth()
-    if text:GetStringWidth() > barW - 4 then
+    -- Auto-size text if bar is too narrow (too short, for text rotated to
+    -- run along a vertical bar)
+    local room = (s.rotateText and s.orientation == "VERTICAL") and frame:GetHeight() or frame:GetWidth()
+    if text:GetStringWidth() > room - 4 then
         text:SetText(format("%.0f%%", pct))
     end
+    if frame._textPost then ns.DataBarPlaceText(frame, s) end
 
     EAB_VTABLE.ExtraBars.FinishManagedDataBarUpdate("RepBar", frame, s)
 end
@@ -17280,11 +17300,13 @@ local function UpdateFavorBar()
     local pct = (current / st.needed) * 100
     text:SetText(format(EllesmereUI.L("House Level %d: %d / %d"), st.displayLevel or 1, current, st.needed))
 
-    -- Auto-size text if bar is too narrow
-    local barW = frame:GetWidth()
-    if text:GetStringWidth() > barW - 4 then
+    -- Auto-size text if bar is too narrow (too short, for text rotated to
+    -- run along a vertical bar)
+    local room = (s.rotateText and s.orientation == "VERTICAL") and frame:GetHeight() or frame:GetWidth()
+    if text:GetStringWidth() > room - 4 then
         text:SetText(format("%.0f%%", pct))
     end
+    if frame._textPost then ns.DataBarPlaceText(frame, s) end
 
     EAB_VTABLE.ExtraBars.FinishManagedDataBarUpdate("FavorBar", frame, s)
 end

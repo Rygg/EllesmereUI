@@ -5531,7 +5531,7 @@ local function HookRCScrollBox(box, isCurrency)
 end
 
 local function Skin_RepCurrency()
-    -- Stock character sheet styles (Style page) keep Blizzard's whole sheet,
+    -- The character sheet's Blizz Default keeps Blizzard's whole sheet,
     -- these tabs included.
     if ns.CharSheetStock and ns.CharSheetStock() then return end
     local rep = _G.ReputationFrame
@@ -7052,6 +7052,14 @@ local MICRO_BUTTONS = {
     "StoreMicroButton", "MainMenuMicroButton", "HelpMicroButton",
     "HousingMicroButton",
 }
+-- WoW Forever keeps several micro buttons retail folded away or renamed (spellbook
+-- and talents split out, socials and PvP as their own buttons). Add them so the
+-- Forever pass skins the whole row; missing/forbidden buttons are skipped per-button.
+if EllesmereUI.IS_FOREVER then
+    for _, n in ipairs({ "SpellbookMicroButton", "TalentMicroButton", "SocialsMicroButton", "PVPMicroButton", "LegacyMicroButton" }) do
+        MICRO_BUTTONS[#MICRO_BUTTONS + 1] = n
+    end
+end
 local MICRO_DECO  = { "Background", "PushedBackground", "FlashBorder", "Shadow", "PushedShadow", "Border", "Backdrop" }
 local MICRO_TRIM  = 0.08
 local MICRO_INSET = 1
@@ -7081,7 +7089,8 @@ local function SkinMicroButtonInner(btn)
             bg:SetColorTexture(Theme.bgR, Theme.bgG, Theme.bgB, MICRO_BG_A)
             bg:SetPoint("TOPLEFT", box, "TOPLEFT", 0, 0)
             bg:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", 0, 0)
-            WSkin.AddBorder(box)
+            -- WoW Forever uses a darker cell border (matches the bag bar pack); retail keeps the theme border.
+            if EllesmereUI.IS_FOREVER then WSkin.AddBorder(box, 0.14, 0.14, 0.14, 1) else WSkin.AddBorder(box) end
             d.box, d.bg = box, bg
             local hl = btn.GetHighlightTexture and btn:GetHighlightTexture()
             if hl and hl.SetColorTexture then
@@ -7108,6 +7117,15 @@ local _microHook = false
 local function Skin_MicroMenu()
     if InCombatLockdown() then return end
     for _, name in ipairs(MICRO_BUTTONS) do SkinMicroButton(_G[name]) end
+    -- WoW Forever's MicroMenu keeps a Blizzard container strip (BackgroundArt +
+    -- BorderArt); on retail the EllesmereUI Bags addon hides the container, so it
+    -- never shows. Fade that art so the flat buttons do not sit inside an ornate
+    -- frame. Alpha only -- never :Hide() the Edit-Mode-owned container.
+    if EllesmereUI.IS_FOREVER and _G.MicroMenu then
+        local mm = _G.MicroMenu
+        if mm.BackgroundArt and mm.BackgroundArt.SetAlpha then mm.BackgroundArt:SetAlpha(0) end
+        if mm.BorderArt and mm.BorderArt.SetAlpha then mm.BorderArt:SetAlpha(0) end
+    end
     if not _microHook and _G.UpdateMicroButtons then
         _microHook = true
         -- UpdateMicroButtons fires several times per frame on routine events:
@@ -7120,10 +7138,8 @@ local function Skin_MicroMenu()
     end
 end
 
--- WoW Forever keeps Blizzard's micro menu art (user decision): the pack is not
--- registered there, so nothing above runs and the UpdateMicroButtons hook is
--- never installed. The options card is dropped on that client to match.
-if not EllesmereUI.IS_FOREVER then
+-- Registered on both clients. On WoW Forever this also covers the legacy micro
+-- buttons appended to MICRO_BUTTONS above, so the whole row matches the house look.
 WSkin.RegisterWindow({
     key = "micromenu",
     apply = function()
@@ -7135,7 +7151,6 @@ WSkin.RegisterWindow({
         pcall(Skin_MicroMenu)
     end,
 })
-end -- not IS_FOREVER
 end
 
 -------------------------------------------------------------------------------

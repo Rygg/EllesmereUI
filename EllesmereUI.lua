@@ -1696,77 +1696,16 @@ function EllesmereUI.UnitEffectiveRole(unit)
 end
 
 -------------------------------------------------------------------------------
---  Manual resource trackers (secret-value safe)
---  Track stacks via UNIT_SPELLCAST_SUCCEEDED instead of reading aura data, which
---  returns secret values in combat. Maelstrom Weapon (344179) and Devourer soul
+--  Resource trackers (secret-value safe)
+--  Maelstrom Weapon (344179), Tip of the Spear (260286) and Devourer soul
 --  fragment auras (1225789, 1227702) are Blizzard-whitelisted and stay readable.
 -------------------------------------------------------------------------------
 
--- Tip of the Spear tracker (Survival Hunter), talent 260285. Kill Command (259489)
--- grants 1 stack (2 with Primal Surge 1272154). Takedown (1250646) grants 3 when Twin
--- Fangs (1272139) is known and spends one on its impact (1253859), netting 2. Spender
--- abilities consume 1 each. Buff: 10s duration, max 3 stacks.
-do
-    local stacks, expiresAt = 0, nil
-    local MAX = 3
-    local DURATION = 10
-    local TALENT     = 260285
-    local KILL_CMD   = 259489
-    local PRIMAL     = 1272154
-    local TAKEDOWN     = 1250646
-    local TAKEDOWN_HIT = 1253859
-    local TWIN_FANG    = 1272139
-    local TWIN_FANG_GAIN = 3
-
-    local SPENDERS = {
-        [186270]  = true,  -- Raptor Strike
-        [265189]  = true,  -- Raptor Strike (ranged)
-        [1262293] = true,  -- Raptor Swipe
-        [1262343] = true,  -- Raptor Swipe (ranged)
-        [259495]  = true,  -- Wildfire Bomb
-        [193265]  = true,  -- Hatchet Toss
-        [1264949] = true,  -- Chakram
-        [1261193] = true,  -- Boomstick
-        [TAKEDOWN_HIT] = true,  -- Takedown's impact (only spends without Twin Fangs)
-        [1251592] = true,  -- Flamefang Pitch
-    }
-
-    function EllesmereUI.HandleTipOfTheSpear(event, unit, _, spellID)
-        if event == "PLAYER_DEAD" or event == "PLAYER_ALIVE" then
-            stacks, expiresAt = 0, nil
-            return
-        end
-        if event ~= "UNIT_SPELLCAST_SUCCEEDED" or unit ~= "player" then return end
-        if not (C_SpellBook and C_SpellBook.IsSpellKnown(TALENT)) then return end
-
-        if spellID == KILL_CMD then
-            local gain = (C_SpellBook.IsSpellKnown(PRIMAL) and 2 or 1)
-            stacks = min(MAX, stacks + gain)
-            expiresAt = GetTime() + DURATION
-        elseif spellID == TAKEDOWN and C_SpellBook.IsSpellKnown(TWIN_FANG) then
-            -- Twin Fangs grants 3 and the impact spends one: the cast nets 2 from any
-            -- starting count (the grant alone always caps). Both halves resolve here
-            -- instead of on the impact event: at melee range both arrive the same frame
-            -- and an impact handled first is swallowed by an empty tracker, leaving the
-            -- bar a stack high for the buff's full duration.
-            stacks = min(MAX, stacks + TWIN_FANG_GAIN) - 1
-            expiresAt = GetTime() + DURATION
-        elseif SPENDERS[spellID] and stacks > 0 then
-            -- With Twin Fangs the cast above already spent for this impact.
-            if spellID == TAKEDOWN_HIT and C_SpellBook.IsSpellKnown(TWIN_FANG) then
-                return
-            end
-            stacks = stacks - 1
-            if stacks == 0 then expiresAt = nil end
-        end
-    end
-
-    function EllesmereUI.GetTipOfTheSpear()
-        if expiresAt and GetTime() >= expiresAt then
-            stacks, expiresAt = 0, nil
-        end
-        return stacks, MAX
-    end
+-- Tip of the Spear stacks (Survival Hunter). Buff 260286 is WHITELISTED, safe to read
+-- in combat. Max 3 stacks.
+function EllesmereUI.GetTipOfTheSpear()
+    local aura = C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID(260286)
+    return (aura and aura.applications or 0), 3
 end
 
 -- DH Soul Fragment count (current, max). Vengeance: C_Spell.GetSpellCastCount(228477)

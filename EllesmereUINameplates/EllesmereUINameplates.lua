@@ -117,6 +117,7 @@ function ns._appendDisplayPresetKeys(t)
         "buffTextSize", "buffTextColor", "ccTextSize", "ccTextColor",
         "raidMarkerPos", "classificationSlot", "classificationShowInInstances",
         "factionSlot", "classificationIncludeFaction",
+        "classificationHideRare", "classificationHideQuest",
         "castNameSize", "castNameColor", "castCombineNameTarget",
         "castTargetSize", "castTargetClassColor", "castTargetColor",
         "showCastTimer", "castTimerSize", "castTimerColor", "targetScale",
@@ -364,6 +365,10 @@ local defaults = {
     factionSlot = "none",
     factionStyle = "pvp",  -- Icon Style: a key of EllesmereUI.FACTION_ART
     classificationIncludeFaction = false,  -- "Rare/Quest + Faction": the badge shares the classification slot
+    -- The classification element's two halves, each switchable in Core Positions:
+    -- the Rare Indicator (elite and rare marks) and the Quest Indicator.
+    classificationHideRare = false,
+    classificationHideQuest = false,
     factionOppositeOnly = false,
     factionPlayersOnly = false,
     factionPvP = "dim",  -- "dim" greys unflagged units, "only" hides them, "ignore" draws both alike
@@ -452,6 +457,9 @@ local defaults = {
     -- same gold on the ABG halo). Keep the two in step.
     dispelGlowColor = { r = 1.0, g = 0.788, b = 0.137 },
     dispelGlowUseTypeColor = false,
+    -- Enemy Buff Filter ("important" | "dispellable" | "showall"): unset reads
+    -- as Important; WoW Forever shows every enemy buff by default.
+    npEnemyBuffFilter = (EllesmereUI.IS_FOREVER == true) and "showall" or nil,
     castScale = 100,
     focusCastHeight = 100,
     questMobColorEnabled = false,
@@ -6132,7 +6140,7 @@ local function EnableClassPowerWatcher()
         classPowerWatcher:RegisterUnitEvent("UNIT_AURA", "player")
         classPowerWatcher:RegisterEvent("PLAYER_TARGET_CHANGED")
         classPowerWatcher:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-        -- Manual tracker events (TotS, Whirlwind, Bladestorm/Unhinged)
+        -- Manual tracker events (Whirlwind, Bladestorm/Unhinged)
         -- so tracking works even without EllesmereUIResourceBars loaded.
         classPowerWatcher:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
         classPowerWatcher:RegisterEvent("PLAYER_DEAD")
@@ -6155,23 +6163,6 @@ local function EnableClassPowerWatcher()
                 ApplyClassPowerSetting()
             elseif event == "PLAYER_TARGET_CHANGED" then
                 RefreshClassPowerFull()
-            elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
-                -- Route to manual trackers so they work standalone.
-                -- Skip if EllesmereUIResourceBars is loaded (it handles routing).
-                if _G._ERB_AceDB then
-                    RefreshClassPower()
-                    return
-                end
-                local unit, castGUID, spellID = ...
-                if unit == "player" and EllesmereUI then
-                    EllesmereUI.HandleTipOfTheSpear(event, unit, castGUID, spellID)
-                end
-                RefreshClassPower()
-            elseif event == "PLAYER_DEAD" or event == "PLAYER_ALIVE" then
-                if not _G._ERB_AceDB and EllesmereUI then
-                    EllesmereUI.HandleTipOfTheSpear(event)
-                end
-                RefreshClassPower()
             elseif event == "PLAYER_REGEN_ENABLED" then
                 RefreshClassPower()
             else
@@ -9087,7 +9078,8 @@ function NameplateFrame:UpdateClassification()
     end
     -- Quest mob indicator takes priority over elite/rare. With "Replace Quest Icon with
     -- Objective" on and a clean remaining count cached, draw that number instead of the icon.
-    if ns.IsQuestMob and ns.IsQuestMob(self.unit) then
+    -- Quest Indicator off: no quest scan, a quest mob shows its elite/rare mark instead.
+    if not (p and p.classificationHideQuest) and ns.IsQuestMob and ns.IsQuestMob(self.unit) then
         local objText = (p and p.replaceQuestIconWithObjective == true)
             and ns.GetQuestObjectiveText and ns.GetQuestObjectiveText(self.unit) or nil
         if objText then
@@ -9116,6 +9108,12 @@ function NameplateFrame:UpdateClassification()
         -- WoW Forever shows no elite or rare mark on its plates (the quest
         -- marks above stay).
         if ns._npForever then
+            self.classFrame:Hide()
+            self:UpdateNameWidth()
+            return
+        end
+        -- Rare Indicator off: no elite or rare marks.
+        if p and p.classificationHideRare then
             self.classFrame:Hide()
             self:UpdateNameWidth()
             return
