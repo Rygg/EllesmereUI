@@ -13,7 +13,18 @@ if not (DataBarsExtensions and DataBarsExtensions.RegisterBlock and DataBarsExte
     return
 end
 if not (ns.Tip_AddDouble and ns.Tip_AddColumns and ns.Tip_AddActionDouble) then return end
-local L = EUI.L or function(text) return text end
+-- Mirrors DataBars' own `local L = ns.L` per-file convention: shared keys fall through to ns.L, new keys live here.
+local L = setmetatable({
+    MYTHICPLUS_RATING        = "Mythic+ Rating",
+    DUNGEON                  = "Dungeon",
+    LEVEL                    = "Level",
+    SCORE                    = "Score",
+    TIME_LIMIT               = "Time (Limit)",
+    PORTALS                  = "Portals",
+    CLICK_DUNGEON_TELEPORT   = "Click a dungeon to teleport",
+    OPEN_MYTHICPLUS_DUNGEONS = "Open Mythic+ Dungeons",
+    OPEN_DUNGEONS_RAIDS      = "Open Dungeons & Raids",
+}, { __index = ns.L or {} })
 local K = ns.BlockKit
 local PORTALS = EUI and EUI.SEASON_PORTALS
 if type(PORTALS) ~= "table" then return end
@@ -221,7 +232,7 @@ end
 
 local function ShowMythicPlusTooltip(button, score)
     -- Compose the tooltip with DataBars' helpers so this extension uses the shared tooltip frame.
-    local title = L("Mythic+ Rating") .. ": "
+    local title = EUI.L(L["MYTHICPLUS_RATING"]) .. ": "
     if score then
         title = title .. "|cff" .. GetColorHex(GetScoreColor(score)) .. tostring(score) .. "|r"
     else
@@ -233,10 +244,10 @@ local function ShowMythicPlusTooltip(button, score)
     ns.Tip_Begin(button)
     ns.Tip_AddLine(title, 1, 1, 1)
     ns.Tip_AddLine(" ")
-    ns.Tip_AddColumns(L("Dungeon"), {
-        "|cff" .. MUTED_HEX .. L("Level") .. "|r",
-        "|cff" .. MUTED_HEX .. L("Score") .. "|r",
-        "|cff" .. MUTED_HEX .. L("Time (Limit)") .. "|r",
+    ns.Tip_AddColumns(EUI.L(L["DUNGEON"]), {
+        "|cff" .. MUTED_HEX .. EUI.L(L["LEVEL"]) .. "|r",
+        "|cff" .. MUTED_HEX .. EUI.L(L["SCORE"]) .. "|r",
+        "|cff" .. MUTED_HEX .. EUI.L(L["TIME_LIMIT"]) .. "|r",
     }, ar, ag, ab)
 
     local runCount, readyCount, knownCount = 0, 0, 0
@@ -320,19 +331,19 @@ local function ShowMythicPlusTooltip(button, score)
 
     if knownCount > 0 then
         ns.Tip_AddLine(" ")
-        ns.Tip_AddLine(L("Portals"), ar, ag, ab)
+        ns.Tip_AddLine(EUI.L(L["PORTALS"]), ar, ag, ab)
         if readyCount > 0 then
-            ns.Tip_AddLine(L("Click a dungeon to teleport"), 0.8, 0.8, 0.8)
+            ns.Tip_AddLine(EUI.L(L["CLICK_DUNGEON_TELEPORT"]), 0.8, 0.8, 0.8)
         else
             -- On-cooldown portals share one cooldown group, so show the soonest remaining time once.
             local cdText = soonestCooldown and FormatRunTime(ceil(soonestCooldown)) or "-"
-            ns.Tip_AddDouble(L("On Cooldown"), cdText, 0.65, 0.65, 0.65, 0.5, 0.5, 0.5)
+            ns.Tip_AddDouble(EUI.L(L["ON_COOLDOWN"]), cdText, 0.65, 0.65, 0.65, 0.5, 0.5, 0.5)
         end
     end
 
     ns.Tip_AddLine(" ")
-    ns.Tip_AddDouble(L("Left Click") .. ":", L("Open Mythic+ Dungeons"), 1, 1, 1, ar, ag, ab)
-    ns.Tip_AddDouble(L("Right Click") .. ":", L("Open Dungeons & Raids"), 1, 1, 1, ar, ag, ab)
+    ns.Tip_AddDouble(EUI.L(L["LEFT_CLICK"]), EUI.L(L["OPEN_MYTHICPLUS_DUNGEONS"]), 1, 1, 1, ar, ag, ab)
+    ns.Tip_AddDouble(EUI.L(L["RIGHT_CLICK"]), EUI.L(L["OPEN_DUNGEONS_RAIDS"]), 1, 1, 1, ar, ag, ab)
     ns.Tip_Show()
 end
 
