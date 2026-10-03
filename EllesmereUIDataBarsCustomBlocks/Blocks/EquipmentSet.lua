@@ -24,9 +24,22 @@ local K = ns.BlockKit
 -- Mirrors DataBars' own `local L = ns.L` per-file convention: shared keys
 -- (LEFT_CLICK, ILVL, ITEM_LEVEL, ...) fall through to ns.L, new keys live here.
 local L = setmetatable({
-    EQUIPMENT_SET        = "Equipment Set",
-    CHANGE_EQUIPMENT_SET = "Change Equipment Set",
-    NO_SET               = "No Set",
+    EQUIPMENT_SET              = "Equipment Set",
+    CHANGE_EQUIPMENT_SET       = "Change Equipment Set",
+    NO_SET                     = "No Set",
+    SHOW_ICON                  = "Show Icon",
+    SHOW_ICON_TOOLTIP          = "Shows the active set's icon next to its name.",
+    UPPERCASE_NAME             = "Uppercase Name",
+    UPPERCASE_NAME_TOOLTIP     = "Shows the set name in capital letters.",
+    ITEM_LEVEL_PREFIX          = "Item Level Prefix",
+    ITEM_LEVEL_PREFIX_TOOLTIP  = "Label shown before the item level.",
+    SHORT                      = "Short",
+    LONG                       = "Long",
+    NONE                       = "None",
+    DECIMALS                   = "Decimals",
+    DECIMALS_TOOLTIP           = "How many decimal places the item level carries.",
+    ONE                        = "One",
+    TWO                        = "Two",
 }, { __index = ns.L or {} })
 
 local BLOCK_TYPE = "equipmentset"
@@ -114,7 +127,26 @@ local function EquipSet(setID)
     end
 end
 
-DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Equipment Set",
+local function BuildOptions(_, s, ctx)
+    return {
+        ctx.Toggle(L["SHOW_ICON"], "showIcon", L["SHOW_ICON_TOOLTIP"], true),
+        ctx.Toggle(L["UPPERCASE_NAME"], "useUppercase", L["UPPERCASE_NAME_TOOLTIP"]),
+        { type = "dropdown", text = L["ITEM_LEVEL_PREFIX"],
+          tooltip = L["ITEM_LEVEL_PREFIX_TOOLTIP"],
+          values = { short = L["SHORT"], long = L["LONG"], none = L["NONE"] },
+          order = { "short", "long", "none" },
+          getValue = function() return s.ilvlPrefix or "short" end,
+          setValue = function(v) s.ilvlPrefix = v; ctx.Apply() end },
+        { type = "dropdown", text = L["DECIMALS"],
+          tooltip = L["DECIMALS_TOOLTIP"],
+          values = { [0] = L["NONE"], [1] = L["ONE"], [2] = L["TWO"] },
+          order = { 0, 1, 2 },
+          getValue = function() return s.precision or 0 end,
+          setValue = function(v) s.precision = v; ctx.Apply() end },
+    }
+end
+
+DataBarsExtensions.RegisterBlock(BLOCK_TYPE, L["EQUIPMENT_SET"],
     { showIcon = true, useUppercase = false, precision = 0, ilvlPrefix = "short" },
     function(blockCfg, slot, content, barCtx)
     local inst = { cfg = blockCfg, slot = slot, content = content, ctx = barCtx }
@@ -474,4 +506,4 @@ DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Equipment Set",
     end
 
     return inst
-end)
+end, BuildOptions)
