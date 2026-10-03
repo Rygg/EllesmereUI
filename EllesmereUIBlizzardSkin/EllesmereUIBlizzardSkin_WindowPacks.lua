@@ -7089,8 +7089,7 @@ local function SkinMicroButtonInner(btn)
             bg:SetColorTexture(Theme.bgR, Theme.bgG, Theme.bgB, MICRO_BG_A)
             bg:SetPoint("TOPLEFT", box, "TOPLEFT", 0, 0)
             bg:SetPoint("BOTTOMRIGHT", box, "BOTTOMRIGHT", 0, 0)
-            -- WoW Forever uses a darker cell border (matches the bag bar pack); retail keeps the theme border.
-            if EllesmereUI.IS_FOREVER then WSkin.AddBorder(box, 0.14, 0.14, 0.14, 1) else WSkin.AddBorder(box) end
+            WSkin.AddBorder(box)
             d.box, d.bg = box, bg
             local hl = btn.GetHighlightTexture and btn:GetHighlightTexture()
             if hl and hl.SetColorTexture then
@@ -12029,9 +12028,9 @@ function LP.ApplyLootRoll()
     if type(_G.GroupLootContainer_Update) == "function" then
         hooksecurefunc("GroupLootContainer_Update", resweep)
     end
-
-    local c = _G.GroupLootContainer
-    if c then WSkin.HookShow(c, resweep) end
+    -- No script hook on the container itself: it only shows inside
+    -- GroupLootContainer_Update (hooked above), and code run from its OnShow
+    -- would leave the rest of that update, the managed-layout pass, under our taint.
 
     -- Fallback for clients where those two globals have gone: the roll event itself is what puts a frame on screen.
     local ev = CreateFrame("Frame")

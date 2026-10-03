@@ -227,7 +227,7 @@ EllesmereUI._WHATSNEW_PATCHES = {
                 module = "Action Bars",
                 title  = "Micro Menu and Bag Bar End Caps",
                 desc   = "The micro menu and bag bar can show end caps like the action bars, and a fresh install moves Action Bar 1's end caps to the outer ends of any bars placed directly beside it",
-                nav    = { module = "EllesmereUIActionBars", page = "Menu, Bags & XP Bars",
+                nav    = { module = "EllesmereUIActionBars", page = "Menu, Bags & Rep Bars",
                            section = "MICRO MENU & BAGS", highlight = "Micro Menu End Caps" },
             },
             {
@@ -1453,6 +1453,15 @@ initFrame:SetScript("OnEvent", function(self)
 
     local function SetCVarSafe(cvar, value)
         if InCombatLockdown() then return end
+        EllesmereUI.SetCVar(cvar, value)
+    end
+
+    -- Graphics and sound settings (Optimize My FPS and Graphics, its Restore and
+    -- Increase Game Image Quality) are written as they are, not through
+    -- EllesmereUI.SetCVar: Optimize keeps its own Restore, and Uninstall EUI
+    -- never touches them.
+    local function SetGfxCVar(cvar, value)
+        if InCombatLockdown() then return end
         SetCVar(cvar, value)
     end
 
@@ -1551,11 +1560,11 @@ initFrame:SetScript("OnEvent", function(self)
                 end
             end
             for _, entry in ipairs(OPTIMIZED_CVARS) do
-                SetCVarSafe(entry[1], entry[2])
+                SetGfxCVar(entry[1], entry[2])
             end
             local curContrast = tonumber(GetCVar("Contrast")) or 50
             if curContrast <= 55 then
-                SetCVarSafe("Contrast", curContrast + 10)
+                SetGfxCVar("Contrast", curContrast + 10)
             end
             local rl = EllesmereUI._widgetRefreshList
             if rl then for i = 1, #rl do rl[i]() end end
@@ -1563,12 +1572,13 @@ initFrame:SetScript("OnEvent", function(self)
 
         local function RestoreGfxSettings()
             if not EllesmereUIDB or not EllesmereUIDB.gfxBackup then return end
+            if InCombatLockdown() then return end
             local backup = EllesmereUIDB.gfxBackup
             for _, entry in ipairs(OPTIMIZED_CVARS) do
                 local saved = backup[entry[1]]
-                if saved then SetCVarSafe(entry[1], saved) end
+                if saved then SetGfxCVar(entry[1], saved) end
             end
-            if backup["Contrast"] then SetCVarSafe("Contrast", backup["Contrast"]) end
+            if backup["Contrast"] then SetGfxCVar("Contrast", backup["Contrast"]) end
             EllesmereUIDB.gfxBackup = nil
             local rl2 = EllesmereUI._widgetRefreshList
             if rl2 then for i = 1, #rl2 do rl2[i]() end end
@@ -2060,7 +2070,7 @@ initFrame:SetScript("OnEvent", function(self)
               tooltip="Enables sharpening to improve image clarity. Especially noticeable at lower render scales.",
               getValue=function() return GetCVarBool("ResampleAlwaysSharpen") end,
               setValue=function(v)
-                SetCVarSafe("ResampleAlwaysSharpen", v and "1" or "0")
+                SetGfxCVar("ResampleAlwaysSharpen", v and "1" or "0")
               end });  y = y - h
 
         _, h = W:DualRow(parent, y,
@@ -2347,6 +2357,7 @@ initFrame:SetScript("OnEvent", function(self)
                             "autoRepairGuild", "hideScreenshotStatus", "autoUnwrapCollections",
                             "trainAllButton", "ahCurrentExpansion", "quickLoot",
                             "autoFillDelete", "skipCinematics", "skipCinematicsAuto",
+                            "bonusRollConfirmation", "bonusRollOnly",
                             "autoInsertKeystone", "quickSignup",
                             "persistSignupNote", "signupNote", "hideBlizzardPartyFrame",
                             "instanceResetAnnounce", "instanceResetAnnounceMsg",
@@ -2358,8 +2369,14 @@ initFrame:SetScript("OnEvent", function(self)
                                 savedQoL[k] = EllesmereUIDB[k]
                             end
                         end
+                        -- Game settings, not EUI ones: the record of the settings from
+                        -- before EUI (Uninstall EUI) and Optimize Graphics' Restore values.
+                        local oldRestore = EllesmereUIDB.restoreOnUninstall
+                        local oldGfx = EllesmereUIDB.gfxBackup
                         _G["EllesmereUIDB"] = {}
                         EllesmereUIDB = _G["EllesmereUIDB"]
+                        EllesmereUIDB.restoreOnUninstall = oldRestore
+                        EllesmereUIDB.gfxBackup = oldGfx
                         if oldScale then EllesmereUIDB.ppUIScale = oldScale end
                         if oldScaleAuto ~= nil then EllesmereUIDB.ppUIScaleAuto = oldScaleAuto end
                         if savedFriends then
