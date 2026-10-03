@@ -1527,7 +1527,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
 
 
     -------------------------------------------------------------------
-    --  TOP SECTION: Import | Popular Presets (2 action cards)
+    --  TOP SECTION: Import | Popular Presets | Uninstall EUI (3 action cards)
     --  Exporting lives solely in the per-addon "Export Profile" section below -- all modules checked is the full export.
     -------------------------------------------------------------------
     _, h = W:Spacer(parent, y, 10);  y = y - h
@@ -1537,14 +1537,16 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
         local CARD_GAP   = 14
         local CARD_ICON  = 26
         local totalW     = parent:GetWidth() - EllesmereUI.CONTENT_PAD * 2
-        local CARD_W     = math.floor((totalW - CARD_GAP) / 2)
+        local CARD_W     = math.floor((totalW - CARD_GAP * 2) / 3)
 
         local rowFrame = CreateFrame("Frame", nil, parent)
         PP.Size(rowFrame, totalW, CARD_H)
         PP.Point(rowFrame, "TOPLEFT", parent, "TOPLEFT", EllesmereUI.CONTENT_PAD, y)
 
-        -- Builds one action card: icon + title + description
-        local function MakeActionCard(parentRow, xOff, iconPath, cardTitle, cardDesc, onClick)
+        -- Builds one action card: icon + title + description. accent (r, g, b) tints the
+        -- top edge and icon; the theme accent when nil.
+        local function MakeActionCard(parentRow, xOff, iconPath, cardTitle, cardDesc, onClick, accent)
+            local ac = accent or EG
             local card = CreateFrame("Button", nil, parentRow)
             PP.Size(card, CARD_W, CARD_H)
             PP.Point(card, "TOPLEFT", parentRow, "TOPLEFT", xOff, 0)
@@ -1558,7 +1560,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
 
             -- Accent top edge
             local accentLine = card:CreateTexture(nil, "ARTWORK", nil, 7)
-            accentLine:SetColorTexture(EG.r, EG.g, EG.b, 0.6)
+            accentLine:SetColorTexture(ac.r, ac.g, ac.b, 0.6)
             PP.Point(accentLine, "TOPLEFT", card, "TOPLEFT", 1, -1)
             PP.Point(accentLine, "TOPRIGHT", card, "TOPRIGHT", -1, -1)
             accentLine:SetHeight(2)
@@ -1568,7 +1570,7 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             icon:SetSize(CARD_ICON, CARD_ICON)
             PP.Point(icon, "LEFT", card, "LEFT", 24, 0)
             icon:SetTexture(iconPath)
-            icon:SetVertexColor(EG.r, EG.g, EG.b)
+            icon:SetVertexColor(ac.r, ac.g, ac.b)
             icon:SetAlpha(0.6)
             if icon.SetSnapToPixelGrid then icon:SetSnapToPixelGrid(false); icon:SetTexelSnappingBias(0) end
 
@@ -1583,7 +1585,9 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             PP.Point(descFs, "TOPLEFT", titleFs, "BOTTOMLEFT", 0, -4)
             PP.Point(descFs, "RIGHT", card, "RIGHT", -14, 0)
             descFs:SetJustifyH("LEFT")
-            descFs:SetWordWrap(false)
+            -- Two lines at most: a third of the row is narrow for longer languages.
+            descFs:SetWordWrap(true)
+            descFs:SetMaxLines(2)
             descFs:SetText(EllesmereUI.L(cardDesc))
 
             card:SetScript("OnEnter", function()
@@ -1620,6 +1624,55 @@ function _G._EUI_BuildProfilesPage(pageName, parent, yOffset)
             EllesmereUI.L("Popular Presets"), EllesmereUI.L("Browse community presets."), function()
                 if EllesmereUI.VideoGuides then EllesmereUI.VideoGuides.Show("presets_website") end
             end)
+
+        -- Uninstall EUI is refused in combat (it reloads) and while Edit Mode is open (it
+        -- saves its own copy of the layouts on exit, over the ones put back). True when
+        -- it was refused.
+        local function UninstallRefused()
+            local msg
+            if InCombatLockdown() then
+                msg = EllesmereUI.L("Uninstalling reloads the UI and cannot run in combat. Leave combat and try again.")
+            elseif EllesmereUI.EditModeOpen() then
+                msg = EllesmereUI.L("Close Edit Mode first, then try again.")
+            end
+            if not msg then return false end
+            EllesmereUI:ShowConfirmPopup({
+                title       = EllesmereUI.L("Uninstall EUI"),
+                message     = msg,
+                confirmText = EllesmereUI.L("OK"),
+                hideCancel  = true,
+            })
+            return true
+        end
+        -- Uninstall EUI: puts back the game settings EllesmereUI changed, turns it off for
+        -- every character and reloads (EllesmereUI_Uninstall.lua). Profiles are kept. The
+        -- reload is a RequestReload after the typed confirm, not reload = true: the typed
+        -- confirm cannot gate WoW Forever's /reload click.
+        cardX = cardX + CARD_W + CARD_GAP
+        MakeActionCard(rowFrame, cardX, MEDIA .. "icons\\power.png",
+            EllesmereUI.L("Uninstall EUI"), EllesmereUI.L("Revert EUI's changes and disable."), function()
+                if UninstallRefused() then return end
+                local message = EllesmereUI.L("Puts back the game settings EUI changed, such as nameplate, action bar, chat and tooltip options, and turns EUI off for every character, then reloads the UI.") .. "\n\n"
+                    .. EllesmereUI.L("Your profiles are kept, so you can turn EUI back on later in the AddOns list.")
+                if EllesmereUIDB and EllesmereUIDB.gfxBackup then
+                    message = message .. "\n\n" .. EllesmereUI.L("Graphics changed by Optimize My FPS and Graphics stay as they are. To undo them, click Restore My Settings on Global Settings > General first.")
+                end
+                EllesmereUI:ShowConfirmPopup({
+                    title         = EllesmereUI.L("Uninstall EUI"),
+                    message       = message,
+                    disclaimer    = (not EllesmereUI.UninstallKnowsOriginals())
+                        and EllesmereUI.L("EUI was installed before it kept a record of your original settings, so the settings it still manages go back to the game's defaults.")
+                        or nil,
+                    typeToConfirm = "Confirm",
+                    confirmText   = EllesmereUI.L("Uninstall & Reload"),
+                    cancelText    = EllesmereUI.L("Cancel"),
+                    onConfirm     = function()
+                        if UninstallRefused() then return end
+                        EllesmereUI.RequestReload(EllesmereUI.L("Uninstall EUI"),
+                            EllesmereUI.L("Reload to finish uninstalling EUI."), EllesmereUI.Uninstall)
+                    end,
+                })
+            end, { r = 0.9, g = 0.3, b = 0.3 })
 
         y = y - CARD_H
     end

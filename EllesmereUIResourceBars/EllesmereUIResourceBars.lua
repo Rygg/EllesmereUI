@@ -3512,7 +3512,7 @@ local function BuildBars()
         -- "Shift Elements if No Resource" checks (IsSpecDisabled +
         -- GetSecondaryResource) plus the master-disable case.
         if sp2.enabled == false or IsSpecDisabled(sp2) or not GetSecondaryResource() then
-            ppExpandDelta = sp2.pipHeight or 20
+            ppExpandDelta = math.max(0, (sp2.pipHeight or 20) + (pp.expandIfNoResourceExtraY or 0))
             ppHeight = ppHeight + ppExpandDelta
             ppDirSign = ResolveExpandDirSign(pp, sp2)
         end
