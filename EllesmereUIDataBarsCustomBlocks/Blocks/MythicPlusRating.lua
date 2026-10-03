@@ -16,6 +16,7 @@ if not (ns.Tip_AddDouble and ns.Tip_AddColumns and ns.Tip_AddActionDouble) then 
 -- Mirrors DataBars' own `local L = ns.L` per-file convention: shared keys fall through to ns.L, new keys live here.
 local L = setmetatable({
     MYTHICPLUS_RATING        = "Mythic+ Rating",
+    MYTHICPLUS_SHORT         = "M+",
     DUNGEON                  = "Dungeon",
     LEVEL                    = "Level",
     SCORE                    = "Score",
@@ -24,6 +25,10 @@ local L = setmetatable({
     CLICK_DUNGEON_TELEPORT   = "Click a dungeon to teleport",
     OPEN_MYTHICPLUS_DUNGEONS = "Open Mythic+ Dungeons",
     OPEN_DUNGEONS_RAIDS      = "Open Dungeons & Raids",
+    COLOR_BY_SCORE           = "Color By Score",
+    COLOR_BY_SCORE_TOOLTIP   = "Colors the score by its rarity tier. Off uses the accent color.",
+    SHOW_LABEL               = "Show Label",
+    SHOW_LABEL_TOOLTIP       = "Prefixes the score with M+.",
 }, { __index = ns.L or {} })
 local K = ns.BlockKit
 local PORTALS = EUI and EUI.SEASON_PORTALS
@@ -366,7 +371,14 @@ local function OpenDungeonsAndRaids()
     if PVEFrame_ToggleFrame then pcall(PVEFrame_ToggleFrame, "GroupFinderFrame", _G.LFDParentFrame) end
 end
 
-DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(blockCfg, slot, content, barCtx)
+local function BuildOptions(_, _, ctx)
+    return {
+        ctx.Toggle(L["COLOR_BY_SCORE"], "colorByScore", L["COLOR_BY_SCORE_TOOLTIP"], true),
+        ctx.Toggle(L["SHOW_LABEL"], "showLabel", L["SHOW_LABEL_TOOLTIP"]),
+    }
+end
+
+DataBarsExtensions.RegisterBlock(BLOCK_TYPE, L["MYTHICPLUS_RATING"], { colorByScore = true, showLabel = false }, function(blockCfg, slot, content, barCtx)
     local inst = { cfg = blockCfg, slot = slot, content = content, ctx = barCtx }
     inst.events = {
         "PLAYER_ENTERING_WORLD",
@@ -387,11 +399,14 @@ DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(bloc
     function inst:Refresh()
         if self._dead then return end
         local score = GetScore()
+        local d = blockCfg.settings or {}
         local text = score and tostring(score) or "-"
         local barCfg = barCtx.cfg
+        -- Bar text bypasses the Tip_* locale helpers, so the prefix is translated by hand.
+        local prefix = EUI.L(L["MYTHICPLUS_SHORT"]) .. " "
 
         ns.SetFont(scoreText, SCORE_FONT_SIZE, barCfg)
-        scoreText:SetText(text)
+        scoreText:SetText(d.showLabel == true and (prefix .. text) or text)
         scoreText:ClearAllPoints()
 
         if barCtx.IsVertical() then
@@ -412,12 +427,25 @@ DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(bloc
         local red, green, blue
         if mouseOver then
             red, green, blue = ns.GetAccent()
-        elseif score then
+        elseif score and d.colorByScore ~= false then
             red, green, blue = GetScoreColor(score)
+        elseif score then
+            red, green, blue = GetAccentColor()
         else
             red, green, blue = MUTED_TEXT_COLOR.r, MUTED_TEXT_COLOR.g, MUTED_TEXT_COLOR.b
         end
-        scoreText:SetTextColor(red, green, blue, 1)
+        if d.showLabel == true then
+            -- Label stays neutral; only the score carries its own color
+            if mouseOver then
+                scoreText:SetText(prefix .. text)
+                scoreText:SetTextColor(red, green, blue, 1)
+            else
+                scoreText:SetText(prefix .. "|cff" .. GetColorHex(red, green, blue) .. text .. "|r")
+                scoreText:SetTextColor(EUI.TEXT_WHITE.r, EUI.TEXT_WHITE.g, EUI.TEXT_WHITE.b, 1)
+            end
+        else
+            scoreText:SetTextColor(red, green, blue, 1)
+        end
         MaybeRelayout(self)
         return score
     end
@@ -474,4 +502,4 @@ DataBarsExtensions.RegisterBlock(BLOCK_TYPE, "Mythic+ Rating", {}, function(bloc
     end
 
     return inst
-end)
+end, BuildOptions)
