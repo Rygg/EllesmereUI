@@ -13,6 +13,7 @@ move-folders:
   EllesmereUI/EllesmereUIDataBarsCustomBlocks: EllesmereUIDataBarsCustomBlocks
   EllesmereUI/EllesmereUIForeverEssentials: EllesmereUIForeverEssentials
   EllesmereUI/EllesmereUIFriends: EllesmereUIFriends
+  EllesmereUI/EllesmereUIGroupFinder: EllesmereUIGroupFinder
   EllesmereUI/EllesmereUILocales: EllesmereUILocales
   EllesmereUI/EllesmereUIMinimap: EllesmereUIMinimap
   EllesmereUI/EllesmereUIMythicTimer: EllesmereUIMythicTimer
@@ -55,3 +56,6 @@ ignore:
   - EllesmereUILocales/_keys.txt
   - README.md
   - CHANGELOG.md
+  - AGENTS.md
+  - EllesmereUILoadoutManager
+  - EllesmereUISimpleLootCouncil
