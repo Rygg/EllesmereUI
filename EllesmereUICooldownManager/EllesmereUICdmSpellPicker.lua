@@ -6,7 +6,7 @@ if EUI_CLIENT_BLOCKED then return end -- pre-12.1 client failsafe (EllesmereUI_C
 -------------------------------------------------------------------------------
 local _, ns = ...
 
--- Upvalue aliases (populated by EllesmereUICooldownManager.lua)
+-- Upvalue aliases (populated by EllesmereUICooldownManager.lua and the EUI_CDM_*.lua files)
 local ECME                   = ns.ECME
 local barDataByKey           = ns.barDataByKey
 local cdmBarFrames           = ns.cdmBarFrames
@@ -143,6 +143,31 @@ do
     }
 end
 
+-- True when Blizzard's Cooldown Manager offers spellID (or a variant of it) as
+-- a cooldown/utility icon for this spec, learned or not. Such a spell belongs
+-- in the picker's spell list: added by Spell ID it is drawn from Blizzard's own
+-- frame, which never reads the custom-spell settings its menu writes. Built per
+-- call (the Add by Spell ID button only).
+function ns.IsCDMTrackedCooldown(spellID)
+    local gcs = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCategorySet
+    local gci = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo
+    if not (gcs and gci) or not _IsUsableSID(spellID) then return false end
+    local set = {}
+    for cat in pairs(ns.CDM_ICON_CD_CATS) do
+        local cdIDs = gcs(cat, true)
+        if cdIDs then
+            for _, cdID in ipairs(cdIDs) do
+                local info = gci(cdID)
+                if info then
+                    if _IsUsableSID(info.spellID) then set[info.spellID] = true end
+                    if _IsUsableSID(info.overrideSpellID) then set[info.overrideSpellID] = true end
+                end
+            end
+        end
+    end
+    return ResolveVariantValue(set, spellID) == true
+end
+
 -- Normalize a spell ID to its base (undo talent overrides), e.g. Voltaic
 -- Blaze (470057) -> Flame Shock (188389). Resident home for what used to be
 -- an options-file-local pair so every consumer (the keep/drop reconcile
@@ -189,7 +214,7 @@ local _buffAliasSeen = {}
 -- Learns every pairwise edge among {displaySID} union linkedList that this session
 -- hasn't already recorded. Ids are gated for secrecy/plausibility here so callers never
 -- need to; the session-cache early-out (mirrors _learnVariantBase in
--- EllesmereUICdmHooks.lua) keeps repeat observations of an already-known pairing from
+-- EUI_CDM_HookResolve.lua) keeps repeat observations of an already-known pairing from
 -- touching the profile table.
 function ns.LearnBuffVariantAlias(displaySID, linkedList)
     if type(linkedList) ~= "table" or #linkedList == 0 then return end
@@ -563,7 +588,7 @@ function ns.EnumerateCDMSettingsCatalog(wantSet)
     local okP, provider = pcall(settings.GetDataProvider, settings)
     if not okP or type(provider) ~= "table" then return nil end
     -- Read the already-built display table, never the getters that would
-    -- build it (see ns.CDMGetProviderDisplayData, EllesmereUICooldownManager.lua).
+    -- build it (see ns.CDMGetProviderDisplayData, EUI_CDM_Reconcile.lua).
     local ordered, infoByID = ns.CDMGetProviderDisplayData(provider)
     if not ordered then return nil end
     local gci = C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo
@@ -1896,7 +1921,7 @@ function ns.AddHostedBuffByCdID(barKey, cdID, sid)
     if not sd then return false end
     DropTrinketSidClaims(cdID, sid)
     -- Empty-table sentinel: ResolveSpellSettings' hostedFrame gate
-    -- (EllesmereUICdmHooks.lua) short-circuits on this table being non-nil to
+    -- (EUI_CDM_HookResolve.lua) short-circuits on this table being non-nil to
     -- skip pricier frame-flag checks. A cd-claimed hosted buff resolves its
     -- own "c"..cooldownID key independently -- only the table's existence matters.
     sd.hostedBuffSpellIDs = sd.hostedBuffSpellIDs or {}
@@ -1943,6 +1968,12 @@ function ns.RemoveTrackedSpell(barKey, idx)
             for variantID, primaryID in pairs(sd.customSpellGroups) do
                 if primaryID == removedID then sd.customSpellGroups[variantID] = nil end
             end
+        end
+        -- An Empty Slot's id is never reused (NewEmptySlotMarker), so its own
+        -- settings entry (its Talent Conditions) goes with it.
+        if removedID and ns.IsEmptySlotMarker(removedID) then
+            local store = ns.GetSpellSettingsStore(barKey)
+            if store then store[removedID] = nil end
         end
 
         -- Route to the ghost CD bar so frames stay routed but hidden. Buff-family bars
